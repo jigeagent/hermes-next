@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermes-next"
+version = "0.1.0"
+description = "Next-generation memory provider for Hermes Agent — fusing OpenViking vector storage with MemOS cognitive engine"
+readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.10"
+
+authors = [
+    { name = "jigeagent", email = "oss@jigeagent.ai" },
+]
+
+keywords = ["memory", "hermes-agent", "openviking", "memos", "cognitive", "rag", "vector-search"]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openviking>=0.3.22",
+    "httpx",
+    "numpy",
+]
+
+[project.urls]
+Homepage = "https://github.com/jigeagent/hermes-next"
+Repository = "https://github.com/jigeagent/hermes-next.git"
+Documentation = "https://github.com/jigeagent/hermes-next#readme"
+Issues = "https://github.com/jigeagent/hermes-next/issues"
+
+[project.scripts]
+hermes-next-viewer = "hermes_next.viewer.server:main"
+
+[project.entry-points."hermes.memory"]
+hermes-next = "hermes_next:register"
+
+[tool.hatch.build]
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+follow_imports = "skip"
+warn_unused_ignores = false

@@ -1,0 +1,7 @@
+name: hermes-next
+version: 0.1.0
+description: Next-generation memory provider — OpenViking + MemOS cognitive engine
+entry_point: hermes_next:register
+type: memory
+license: AGPL-3.0
+homepage: https://github.com/jigeagent/hermes-next
