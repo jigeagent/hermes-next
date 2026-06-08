@@ -75,6 +75,14 @@ class PolicyRepository:
         row = self._cache.conn.execute("SELECT COUNT(*) as cnt FROM policies").fetchone()
         return row["cnt"] if row else 0
 
+    def update_metadata(self, policy_id: str, metadata: dict[str, Any]) -> None:
+        """Update policy metadata (e.g., repair blocks)."""
+        self._cache.execute(
+            "UPDATE policies SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False, default=str), policy_id),
+        )
+        self._cache.conn.commit()
+
     @staticmethod
     def _row_to_policy(row: Any) -> PolicyRow:
         return PolicyRow(

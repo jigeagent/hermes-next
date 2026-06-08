@@ -91,6 +91,11 @@ class LifecycleConfig:
     cleanup_interval_traces: int = 500
     """Run cleanup every N new traces."""
 
+    session_stale_hours: int = 4
+    """Hours after which an open session is considered stale.
+    Default 4h (daily chat). 好妹 (long-running VM) may set 24h.
+    灵儿 (frequent restarts) may set 1h."""
+
 
 @dataclass
 class IntegrationConfig:
@@ -113,6 +118,23 @@ class IntegrationConfig:
 
 
 @dataclass
+class FeedbackConfig:
+    """Feedback loop settings."""
+
+    enabled: bool = True
+    """Enable feedback submission and processing."""
+
+    debounce_seconds: int = 30
+    """Merge identical-polarity feedback within this window."""
+
+    weak_magnitude_threshold: float = 0.3
+    """Feedback below this magnitude only writes @repair, no reward recalc."""
+
+    l2_reinduction_min_negatives: int = 3
+    """Minimum negative feedback count in 24h to trigger L2 re-induction."""
+
+
+@dataclass
 class HermesNextConfig:
     """Top-level configuration."""
 
@@ -123,6 +145,7 @@ class HermesNextConfig:
     cognitive: CognitiveConfig = field(default_factory=CognitiveConfig)
     lifecycle: LifecycleConfig = field(default_factory=LifecycleConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
+    feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "HermesNextConfig":
@@ -209,6 +232,19 @@ class HermesNextConfig:
                 self.lifecycle.policy_min_confidence = float(lc["policy_min_confidence"])
             if "cleanup_interval_traces" in lc:
                 self.lifecycle.cleanup_interval_traces = int(lc["cleanup_interval_traces"])
+            if "session_stale_hours" in lc:
+                self.lifecycle.session_stale_hours = int(lc["session_stale_hours"])
+
+        if "feedback" in data:
+            fb = data["feedback"]
+            if "enabled" in fb:
+                self.feedback.enabled = bool(fb["enabled"])
+            if "debounce_seconds" in fb:
+                self.feedback.debounce_seconds = int(fb["debounce_seconds"])
+            if "weak_magnitude_threshold" in fb:
+                self.feedback.weak_magnitude_threshold = float(fb["weak_magnitude_threshold"])
+            if "l2_reinduction_min_negatives" in fb:
+                self.feedback.l2_reinduction_min_negatives = int(fb["l2_reinduction_min_negatives"])
 
         if "integration" in data:
             ig = data["integration"]

@@ -60,12 +60,13 @@ class TestProviderTools:
         provider.initialize(session_id="test")
 
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 4
+        assert len(schemas) == 5
         names = [s["function"]["name"] for s in schemas]
         assert "memos_search" in names
         assert "memos_get" in names
         assert "memos_timeline" in names
         assert "memos_status" in names
+        assert "memos_feedback" in names
 
     @patch("hermes_next.provider.OpenVikingClient")
     def test_handle_tool_call_unknown(self, mock_client_class, config):

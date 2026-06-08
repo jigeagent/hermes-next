@@ -7,16 +7,22 @@ import logging
 from typing import Any, Optional
 
 from hermes_next.cache.connection import CacheConnection
+from hermes_next.cache.feedback import FeedbackRepository
 from hermes_next.cache.lifecycle import LifecycleManager
+from hermes_next.cache.policies import PolicyRepository
 from hermes_next.cache.schema import ensure_schema
+from hermes_next.cache.session_state import SessionState, SessionStateRepository
 from hermes_next.config import HermesNextConfig
 from hermes_next.integration.native import NativeMemoryClient, NativeMemoryConfig
 from hermes_next.memos.capture import capture_trace
+from hermes_next.memos.feedback import FeedbackSignal
 from hermes_next.memos.pipeline import (
     CognitivePipeline,
     CognitivePipelineConfig,
     PipelineStage,
 )
+from hermes_next.memos.reward import OutcomeSignal
+from hermes_next.memos.repair import apply_decision_repair
 from hermes_next.memos.retrieval import format_results, retrieve_semantic, retrieve_timeline
 from hermes_next.memos.types import TraceRow
 from hermes_next.ov.client import OpenVikingClient
@@ -46,6 +52,10 @@ class HermesNextProvider:
         # Embedding cache: {text: embedding}
         self._embed_cache: dict[str, list[float]] = {}
         self._embed_cache_max: int = 256
+        # v0.4: Feedback & session state repos (lazy init)
+        self._feedback_repo: Optional[FeedbackRepository] = None
+        self._session_repo: Optional[SessionStateRepository] = None
+        self._policy_repo: Optional[PolicyRepository] = None
 
     def _get_embedding(self, text: str) -> Optional[list[float]]:
         """Cached embedding lookup."""
@@ -127,6 +137,26 @@ class HermesNextProvider:
         self._pipeline = CognitivePipeline(
             config=CognitivePipelineConfig(enabled_stages=pipeline_enabled_stages),
         )
+
+        # v0.4: Feedback + session state repos
+        from hermes_next.cache.feedback import FeedbackRepository
+        from hermes_next.cache.session_state import SessionStateRepository
+        from hermes_next.cache.policies import PolicyRepository
+
+        self._feedback_repo = FeedbackRepository(self._cache)
+        self._session_repo = SessionStateRepository(self._cache)
+        self._policy_repo = PolicyRepository(self._cache)
+
+        # v0.4: Session state tracking for crash recovery
+        self._session_repo.upsert(SessionState(
+            session_id=session_id,
+            agent_name=self._agent_name,
+            turn_index=0,
+            status="open",
+        ))
+
+        # v0.4: Recover orphan sessions from previous crashes
+        self._recover_orphan_sessions()
 
         self._session = OVSession(
             client=self._client,
@@ -224,6 +254,163 @@ class HermesNextProvider:
             self._pipeline.process_trace(trace)
             self._session_traces.append(trace)
 
+        # v0.4: Update session state for crash recovery
+        if self._session_repo:
+            self._session_repo.touch(session_id, turn_index=self._turn_index)
+
+    # ── v0.4: Feedback Loop ─────────────────────────────
+
+    def submit_feedback(
+        self,
+        polarity: str,
+        text: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        magnitude: float = 1.0,
+        *,
+        episode_id: str,
+    ) -> str:
+        """Submit user feedback → reward recalculation → L2 re-induction → Decision Repair.
+
+        Agent-facing interface for the feedback tool.
+
+        Args:
+            polarity: 'positive' | 'negative' | 'neutral'
+            text: Optional correction text (required for Decision Repair)
+            trace_id: Optional target trace for the feedback
+            magnitude: Signal strength 0.0–1.0. < 0.3 = weak feedback.
+            episode_id: Episode to apply feedback to.
+
+        Returns:
+            Human-readable result string.
+        """
+        if not self._config.feedback.enabled:
+            return "Feedback is disabled."
+
+        cfg = self._config.feedback
+        signal = FeedbackSignal(
+            episode_id=episode_id,
+            trace_id=trace_id,
+            polarity=polarity,  # type: ignore[arg-type]
+            magnitude=min(1.0, max(0.0, magnitude)),
+            text=text,
+            source="user",
+            agent_name=self._agent_name,
+        )
+
+        # 1. Persist feedback
+        self._feedback_repo.insert(signal)
+
+        # 2. Weak feedback (< threshold) → only repair, no reward
+        if signal.magnitude < cfg.weak_magnitude_threshold:
+            if signal.polarity == "negative" and signal.text:
+                self._apply_decision_repair(signal)
+            return f"Weak feedback recorded (magnitude={signal.magnitude}). Repair written."
+
+        # 3. Debounce: same polarity within window
+        recent = self._feedback_repo.count_recent(
+            episode_id=signal.episode_id,
+            polarity=signal.polarity,
+            within_seconds=cfg.debounce_seconds,
+        )
+        if recent > 0:
+            return f"Feedback debounced ({recent} similar within {cfg.debounce_seconds}s)."
+
+        # 4. Reward recalculation
+        outcome = (
+            OutcomeSignal.USER_THUMBS_UP
+            if signal.polarity == "positive"
+            else OutcomeSignal.USER_THUMBS_DOWN
+        )
+        if self._pipeline:
+            updated_traces = self._pipeline.reward_engine.apply_outcome(
+                traces=self._session_traces or self._get_session_traces(signal.episode_id),
+                signal=outcome,
+                manual_value=signal.magnitude,
+            )
+
+            # 5. L2 re-induction (only after ≥threshold negative feedbacks)
+            if (
+                signal.polarity == "negative"
+                and self._feedback_repo.count_negative_since(
+                    signal.episode_id, hours=24
+                )
+                >= cfg.l2_reinduction_min_negatives
+            ):
+                new_policies = self._pipeline.policy_inducer.batch_induce(
+                    traces=updated_traces,
+                    existing_policies=self._pipeline.policies,
+                )
+                for p in new_policies:
+                    self._policy_repo.insert(p)
+                if new_policies:
+                    logger.info("L2 re-induced %d policies from feedback", len(new_policies))
+
+        # 6. Decision Repair
+        if signal.polarity == "negative" and signal.text:
+            self._apply_decision_repair(signal)
+
+        return (
+            f"Feedback recorded ({polarity}, mag={signal.magnitude:.1f}). "
+            f"{'Repair applied.' if signal.polarity == 'negative' and signal.text else 'Reward updated.'}"
+        )
+
+    def _apply_decision_repair(self, signal: FeedbackSignal) -> None:
+        """Find matching policy and append @repair block."""
+        policies = self._policy_repo.list_active()
+        apply_decision_repair(signal, policies, self._policy_repo)
+
+    def _get_session_traces(self, episode_id: str) -> list:
+        """Fallback: load traces from cache when _session_traces is empty."""
+        if self._cache:
+            from hermes_next.cache.traces import TraceRepository
+
+            return TraceRepository(self._cache).list_by_session(episode_id)
+        return []
+
+    # ── v0.4: Crash Recovery ────────────────────────────
+
+    def _recover_orphan_sessions(self) -> None:
+        """Scan for stale open sessions and run session_end on them."""
+        if not self._session_repo:
+            return
+
+        stale_hours = self._config.lifecycle.session_stale_hours
+        stale = self._session_repo.list_stale(
+            stale_hours=stale_hours,
+            agent_name=self._agent_name,
+        )
+        if not stale:
+            return
+
+        logger.info("Recovering %d orphan sessions (stale > %dh)", len(stale), stale_hours)
+        from hermes_next.cache.traces import TraceRepository
+
+        trace_repo = TraceRepository(self._cache)
+        for session in stale:
+            try:
+                traces = trace_repo.list_by_session(session.session_id)
+                if not traces:
+                    self._session_repo.close(session.session_id)
+                    continue
+
+                # Run cognitive pipeline on recovered traces
+                if self._pipeline:
+                    results = self._pipeline.process_session_end(
+                        traces=traces,
+                        session_success=True,
+                    )
+                    self._persist_pipeline_results(results)
+
+                self._session_repo.close(session.session_id)
+                logger.info(
+                    "Recovered session %s: %d traces, %d policies",
+                    session.session_id,
+                    len(traces),
+                    len(results.get("new_policies", [])) if self._pipeline else 0,
+                )
+            except Exception as e:
+                logger.warning("Failed to recover session %s: %s", session.session_id, e)
+
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas exposed to the Hermes agent."""
         return [
@@ -296,6 +483,36 @@ class HermesNextProvider:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memos_feedback",
+                    "description": "Submit user feedback on a memory trace. "
+                                   "Use this when the user corrects or confirms a past interaction. "
+                                   "Positive feedback reinforces the behavior; negative feedback "
+                                   "triggers Decision Repair and may re-induce policies.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "polarity": {
+                                "type": "string",
+                                "enum": ["positive", "negative", "neutral"],
+                                "description": "Whether this is positive, negative, or neutral feedback",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Optional correction text (required for Decision Repair)",
+                            },
+                            "magnitude": {
+                                "type": "number",
+                                "description": "Signal strength 0.0-1.0 (default 1.0, <0.3 = weak feedback)",
+                                "default": 1.0,
+                            },
+                        },
+                        "required": ["polarity"],
+                    },
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
@@ -343,6 +560,16 @@ class HermesNextProvider:
         if tool_name == "memos_status":
             return self._render_pipeline_status()
 
+        if tool_name == "memos_feedback":
+            if not self._feedback_repo:
+                return "Error: feedback system not initialized"
+            return self.submit_feedback(
+                polarity=args.get("polarity", "neutral"),
+                text=args.get("text"),
+                magnitude=float(args.get("magnitude", 1.0)),
+                episode_id=args.get("episode_id", self._agent_name),
+            )
+
         return f"Unknown tool: {tool_name}"
 
     def _render_pipeline_status(self) -> str:
@@ -382,6 +609,23 @@ class HermesNextProvider:
             lines.append(f"**Policy decay rate:** {lc.get('policy_decay_rate', '-')}")
             lines.append(f"**Last cleanup:** {lc.get('last_cleanup', 'never')}")
             lines.append(f"**Traces since cleanup:** {lc.get('traces_since_cleanup', 0)}")
+            lines.append(f"**Session stale hours:** {self._config.lifecycle.session_stale_hours}h")
+
+        if self._config.feedback.enabled:
+            lines.append("")
+            lines.append("---")
+            lines.append("### Feedback")
+            lines.append(f"**Feedback enabled:** ✅")
+            lines.append(f"**Debounce window:** {self._config.feedback.debounce_seconds}s")
+            lines.append(f"**L2 re-induction threshold:** {self._config.feedback.l2_reinduction_min_negatives} negatives")
+            if self._cache:
+                try:
+                    fb_count = self._cache.execute(
+                        "SELECT COUNT(*) FROM feedback"
+                    ).fetchone()[0]
+                    lines.append(f"**Total feedback signals:** {fb_count}")
+                except Exception:
+                    pass
 
         if self._native:
             ni = self._native.get_stats()
@@ -411,7 +655,7 @@ class HermesNextProvider:
         self._initialized = False
         logger.info("HermesNextProvider shut down")
 
-    def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+    def on_session_end(self, messages: list[dict[str, Any]], session_id: str = "") -> None:
         """Called when the Hermes session ends.
 
         Runs the cognitive pipeline (Reward → L2 → L3 → Skill) on
@@ -429,7 +673,13 @@ class HermesNextProvider:
             except Exception as e:
                 logger.warning("Cognitive pipeline failed: %s", e)
 
-        # Reset session state
+        # v0.4: Close session state for crash recovery
+        if self._session_repo:
+            from hermes_next.cache.session_state import SessionState
+
+            self._session_repo.close(session_id)  # type: ignore[arg-type]
+
+        # Reset session traces
         self._session_traces = []
 
         # Commit OpenViking session

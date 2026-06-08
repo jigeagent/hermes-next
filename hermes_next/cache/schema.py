@@ -116,6 +116,40 @@ def ensure_schema(conn_or_cache: CacheConnection) -> None:
             ON triples(predicate);
         CREATE INDEX IF NOT EXISTS idx_triples_object
             ON triples(object);
+
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          TEXT PRIMARY KEY,
+            episode_id  TEXT NOT NULL,
+            trace_id    TEXT,
+            polarity    TEXT NOT NULL,
+            magnitude   REAL NOT NULL DEFAULT 1.0,
+            text        TEXT,
+            source      TEXT NOT NULL DEFAULT 'user',
+            agent_name  TEXT NOT NULL DEFAULT 'default',
+            created_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_feedback_episode
+            ON feedback(episode_id);
+        CREATE INDEX IF NOT EXISTS idx_feedback_agent
+            ON feedback(agent_name);
+        CREATE INDEX IF NOT EXISTS idx_feedback_polarity
+            ON feedback(polarity);
+
+        CREATE TABLE IF NOT EXISTS session_state (
+            session_id    TEXT PRIMARY KEY,
+            agent_name    TEXT NOT NULL,
+            turn_index    INTEGER NOT NULL DEFAULT 0,
+            status        TEXT NOT NULL DEFAULT 'open',
+            opened_at     TEXT NOT NULL,
+            last_active   TEXT NOT NULL,
+            metadata      TEXT DEFAULT '{}'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_session_status
+            ON session_state(status);
+        CREATE INDEX IF NOT EXISTS idx_session_agent
+            ON session_state(agent_name);
     """)
     conn.commit()
 
@@ -127,6 +161,8 @@ def drop_schema(conn_or_cache: CacheConnection) -> None:
         DROP TABLE IF EXISTS traces_fts;
         DROP TABLE IF EXISTS skills;
         DROP TABLE IF EXISTS policies;
+        DROP TABLE IF EXISTS feedback;
+        DROP TABLE IF EXISTS session_state;
         DROP TABLE IF EXISTS triples;
         DROP TABLE IF EXISTS concepts;
         DROP TABLE IF EXISTS traces;
