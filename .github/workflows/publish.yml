@@ -1,15 +1,13 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +23,8 @@ jobs:
           python -m hatchling build
           ls -la dist/
 
-      - name: Publish to PyPI (OIDC trusted publishing or token fallback)
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          password: ${{ secrets.PYPI_TOKEN }}
           skip-existing: true
