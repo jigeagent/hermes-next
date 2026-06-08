@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from hermes_next.memos.id import new_id
 from hermes_next.memos.types import PolicyRow, TraceRow

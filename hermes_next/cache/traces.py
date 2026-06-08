@@ -55,6 +55,9 @@ class TraceRepository:
 
     def search_fts(self, query: str, limit: int = 8) -> list[TraceRow]:
         """Full-text search on traces using FTS5."""
+        # Strip surrogate characters and control chars that crash FTS5
+        query = query.encode("utf-8", "surrogatepass").decode("utf-8", "replace")
+        query = "".join(c for c in query if c.isprintable() or c in (" ", "\n", "\t"))
         safe = query.replace('"', '""')
         rows = self._cache.execute(
             """

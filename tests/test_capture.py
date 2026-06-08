@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from hermes_next.memos.capture import capture_trace
 from hermes_next.memos.id import new_id, timestamp_from_id
 from hermes_next.memos.types import TraceRow

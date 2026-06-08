@@ -1,6 +1,5 @@
 """Tests for L3 World Model abstraction."""
 
-import pytest
 
 from hermes_next.memos.types import TraceRow
 from hermes_next.memos.world_model import Concept, Triple, WorldModel, WorldModelConfig

@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 from typing import Any, Optional
 
+from hermes_next.cache.connection import CacheConnection
+from hermes_next.cache.schema import ensure_schema
 from hermes_next.config import HermesNextConfig
 from hermes_next.memos.capture import capture_trace
-from hermes_next.memos.id import new_id
 from hermes_next.memos.retrieval import (
     format_results,
-    retrieve_deep,
-    retrieve_policies,
     retrieve_semantic,
     retrieve_timeline,
 )
 from hermes_next.memos.types import TraceRow
 from hermes_next.ov.client import OpenVikingClient
 from hermes_next.ov.session import OVSession
+from hermes_next.retrieval.pipeline import RetrievalPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +29,8 @@ class HermesNextProvider:
     def __init__(self, config: Optional[HermesNextConfig] = None):
         self._config = config or HermesNextConfig()
         self._client: Optional[OpenVikingClient] = None
+        self._cache: Optional[CacheConnection] = None
+        self._retrieval: Optional[RetrievalPipeline] = None
         self._session: Optional[OVSession] = None
         self._agent_name: str = self._config.agent.name
         self._turn_index: int = 0
@@ -67,7 +68,7 @@ class HermesNextProvider:
         return self._client.health()
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        """Establish OpenViking connection and open a session."""
+        """Establish OpenViking connection, open local cache, and initialise retrieval pipeline."""
         cfg = self._config
         self._client = OpenVikingClient(
             base_url=cfg.openviking.base_url,
@@ -76,6 +77,18 @@ class HermesNextProvider:
             max_retries=cfg.openviking.max_retries,
         )
         self._agent_name = kwargs.get("agent_name", cfg.agent.name)
+
+        # Local SQLite cache for FTS5 + offline search
+        self._cache = CacheConnection(cfg.cache.path, wal_mode=cfg.cache.wal_mode)
+        ensure_schema(self._cache)
+
+        # Fusion retrieval pipeline (semantic + FTS5 + timeline + RRF + MMR)
+        self._retrieval = RetrievalPipeline(
+            ov_client=self._client,
+            cache=self._cache,
+            config=cfg.retrieval,
+        )
+
         self._session = OVSession(
             client=self._client,
             session_id=session_id,
@@ -90,47 +103,25 @@ class HermesNextProvider:
         )
 
     def prefetch(self, query: str, *, session_id: str) -> str:
-        """Unified retrieval pipeline: fetch relevant context before a turn.
+        """Fusion retrieval: OpenViking semantic + local FTS5 + timeline,
+        fused via RRF, boosted by recency, diversified by MMR.
 
-        Combines semantic search, deep search, policy matching, and timeline.
+        Replaced the earlier inline multi-tier merge with the full
+        6-step RetrievalPipeline in v0.2.1.
         """
-        if not self._client:
+        if not self._client or not self._retrieval:
             return ""
 
         agent = self._agent_name
+        query_embedding = self._get_embedding(query)
 
-        # Parallel retrieval from multiple tiers
-        semantic_results = retrieve_semantic(self._client, query, agent=agent)
-        deep_results = retrieve_deep(self._client, query, agent=agent)
-        policy_results = retrieve_policies(self._client, query, agent=agent)
-
-        # Combine and deduplicate by ID
-        seen: set[str] = set()
-        combined: list[dict[str, Any]] = []
-
-        for results, weight in [
-            (semantic_results, 1.0),
-            (deep_results, 0.8),
-            (policy_results, 0.6),
-        ]:
-            for r in results:
-                rid = r.get("id", r.get("uri", ""))
-                if rid and rid not in seen:
-                    r["_weight"] = r.get("_weight", 1.0) * weight
-                    seen.add(rid)
-                    combined.append(r)
-
-        # Sort by relevance score or weight
-        combined.sort(
-            key=lambda x: (
-                x.get("score", x.get("relevance", x.get("_weight", 0)))
-                if isinstance(x.get("score"), (int, float))
-                else 0
-            ),
-            reverse=True,
+        results = self._retrieval.retrieve(
+            query=query,
+            agent=agent,
+            query_embedding=query_embedding,
         )
 
-        return format_results(combined)
+        return format_results(results)
 
     def sync_turn(  # noqa: PLR0913
         self,
@@ -147,7 +138,7 @@ class HermesNextProvider:
             return
 
         self._turn_index += 1
-        capture_trace(
+        trace = capture_trace(
             client=self._client,
             session_id=session_id,
             turn_index=self._turn_index,
@@ -160,6 +151,13 @@ class HermesNextProvider:
                 "source": "hermes-next",
             },
         )
+
+        # Persist to local SQLite cache for FTS5 + offline retrieval
+        if trace and self._cache:
+            from hermes_next.cache.traces import TraceRepository
+
+            repo = TraceRepository(self._cache)
+            repo.insert(trace)
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas exposed to the Hermes agent."""
@@ -268,9 +266,11 @@ class HermesNextProvider:
         return f"Unknown tool: {tool_name}"
 
     def shutdown(self) -> None:
-        """Close the OpenViking connection."""
+        """Close the OpenViking connection and local cache."""
         if self._client:
             self._client.close()
+        if self._cache:
+            self._cache.close_all()
         self._initialized = False
         logger.info("HermesNextProvider shut down")
 

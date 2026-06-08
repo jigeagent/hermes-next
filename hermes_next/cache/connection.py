@@ -5,8 +5,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
-
 
 # Shared statement cache across threads
 _STMT_CACHE: dict[str, sqlite3.Cursor] = {}

@@ -516,7 +516,7 @@ def main() -> None:
             if ov_client.health():
                 print(f"\nOpenViking connected: {args.ov_url}")
             else:
-                print(f"\n[WARN] OpenViking unavailable, skipping sync", file=sys.stderr)
+                print("\n[WARN] OpenViking unavailable, skipping sync", file=sys.stderr)
                 ov_client = None
         except Exception as e:
             print(f"\n[WARN] OpenViking connection failed: {e}", file=sys.stderr)

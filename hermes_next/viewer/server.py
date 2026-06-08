@@ -9,15 +9,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import mimetypes
-import os
 import sqlite3
-import sys
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from hermes_next.cache.connection import CacheConnection
 from hermes_next.cache.schema import ensure_schema
@@ -276,15 +272,15 @@ def serve(
     _APIHandler._ov_url = ov_url
 
     server = HTTPServer((host, port), _APIHandler)
-    print(f"╔══════════════════════════════════════════╗")
-    print(f"║  Hermes Next Viewer                      ║")
-    print(f"║  ──────────────────────                  ║")
+    print("╔══════════════════════════════════════════╗")
+    print("║  Hermes Next Viewer                      ║")
+    print("║  ──────────────────────                  ║")
     print(f"║  Local:   http://{host}:{port}              ║")
     print(f"║  Cache:   {cache_path}  ║")
     print(f"║  OpenViking: {ov_url}  ║")
-    print(f"║                                          ║")
-    print(f"║  Ctrl+C to stop                          ║")
-    print(f"╚══════════════════════════════════════════╝")
+    print("║                                          ║")
+    print("║  Ctrl+C to stop                          ║")
+    print("╚══════════════════════════════════════════╝")
 
     try:
         server.serve_forever()

@@ -1,10 +1,8 @@
 """Tests for cognitive pipeline orchestration."""
 
-import pytest
 
 from hermes_next.memos.pipeline import (
     CognitivePipeline,
-    CognitivePipelineConfig,
     PipelineStage,
 )
 from hermes_next.memos.reward import OutcomeSignal

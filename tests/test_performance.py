@@ -3,8 +3,6 @@
 Run with: pytest tests/test_performance.py -v --benchmark
 """
 
-import time
-from pathlib import Path
 
 import pytest
 
@@ -14,7 +12,6 @@ from hermes_next.cache.traces import TraceRepository
 from hermes_next.cache.vector import cosine_similarity, search_by_embedding
 from hermes_next.memos.id import new_id
 from hermes_next.memos.types import TraceRow
-
 
 # Skip unless --benchmark flag is given
 pytestmark = pytest.mark.skipif(

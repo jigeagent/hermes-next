@@ -15,7 +15,6 @@ import logging
 from typing import Any, Optional
 
 from hermes_next.cache.connection import CacheConnection
-from hermes_next.cache.schema import ensure_schema
 from hermes_next.cache.traces import TraceRepository
 from hermes_next.config import RetrievalConfig
 from hermes_next.memos.retrieval import retrieve_semantic

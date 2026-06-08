@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hermes-next"
-version = "0.2.0"
+version = "0.2.1"
 description = "Next-generation memory provider for Hermes Agent — fusing OpenViking vector storage with MemOS cognitive engine"
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "openviking>=0.3.22",
+    "openviking>=0.3.22,<0.4",
     "httpx",
     "numpy",
 ]

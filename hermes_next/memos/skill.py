@@ -5,9 +5,9 @@ reusable, versioned skills with human-readable usage guides.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from hermes_next.memos.types import PolicyRow, SkillRow
 

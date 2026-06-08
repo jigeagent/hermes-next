@@ -3,16 +3,14 @@
 import json
 import threading
 from http.server import HTTPServer
-from pathlib import Path
 from typing import Any
-from urllib.request import urlopen, Request
+from urllib.request import urlopen
 
 import pytest
 
 from hermes_next.cache.connection import CacheConnection
 from hermes_next.cache.schema import drop_schema, ensure_schema
-from hermes_next.memos.types import TraceRow, PolicyRow, SkillRow
-from hermes_next.viewer.server import _APIHandler, serve
+from hermes_next.viewer.server import _APIHandler
 
 
 @pytest.fixture
@@ -177,8 +175,9 @@ class TestViewerServe:
     def test_serve_function(self, tmp_path):
         db_path = str(tmp_path / "serve_test.db")
         # Just test it starts without error
-        from hermes_next.viewer import serve
         import threading
+
+        from hermes_next.viewer import serve
         t = threading.Thread(
             target=serve,
             args=(db_path, "http://localhost:1933", 0),

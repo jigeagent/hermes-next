@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_next.provider import HermesNextProvider
 from hermes_next.config import HermesNextConfig
+from hermes_next.provider import HermesNextProvider
 
 
 @pytest.fixture
@@ -93,25 +93,24 @@ class TestProviderPrefetch:
         result = provider.prefetch("test query", session_id="s1")
         assert result == ""
 
-    @patch("hermes_next.provider.retrieve_semantic")
-    @patch("hermes_next.provider.retrieve_deep")
-    @patch("hermes_next.provider.retrieve_policies")
+    @patch("hermes_next.provider.CacheConnection")
+    @patch("hermes_next.provider.RetrievalPipeline")
     @patch("hermes_next.provider.OpenVikingClient")
     def test_prefetch_with_results(
         self,
         mock_client_class,
-        mock_policies,
-        mock_deep,
-        mock_semantic,
+        mock_pipeline_class,
+        mock_cache_class,
         config,
     ):
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
-        mock_semantic.return_value = [
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.retrieve.return_value = [
             {"id": "1", "content": "test content", "score": 0.95}
         ]
-        mock_deep.return_value = []
-        mock_policies.return_value = []
+        mock_pipeline_class.return_value = mock_pipeline
 
         provider = HermesNextProvider(config)
         provider.initialize(session_id="test")
@@ -119,7 +118,7 @@ class TestProviderPrefetch:
 
         assert "相关记忆" in result
         assert "test content" in result
-        mock_semantic.assert_called_once()
+        mock_pipeline.retrieve.assert_called_once()
 
 
 class TestProviderSyncTurn:

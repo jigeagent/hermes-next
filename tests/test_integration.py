@@ -5,7 +5,6 @@ Skip with: pytest -m "not integration"
 """
 
 import os
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,10 +14,8 @@ from hermes_next.cache.schema import drop_schema, ensure_schema
 from hermes_next.cache.traces import TraceRepository
 from hermes_next.config import HermesNextConfig
 from hermes_next.memos.types import TraceRow
-from hermes_next.ov.client import OpenVikingClient
 from hermes_next.provider import HermesNextProvider
 from hermes_next.retrieval.pipeline import RetrievalPipeline
-from hermes_next.retrieval.ranker import rrf_merge
 
 # Mark all tests in this module as integration
 pytestmark = [

@@ -1,6 +1,5 @@
 """Tests for L2 Policy induction."""
 
-import pytest
 
 from hermes_next.memos.policy import PolicyConfig, PolicyInducer
 from hermes_next.memos.types import PolicyRow, TraceRow
