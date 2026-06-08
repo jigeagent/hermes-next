@@ -1,6 +1,6 @@
 # plugin.yaml — Hermes Agent plugin manifest for Hermes Next
 name: hermes-next
-version: 0.2.1
+version: 0.3.0
 description: >-
   Next-generation memory provider for Hermes Agent.
   Fuses OpenViking vector storage with MemOS cognitive engine:

@@ -84,6 +84,38 @@ def ensure_schema(conn_or_cache: CacheConnection) -> None:
             INSERT INTO traces_fts(rowid, user_content, assistant_content, tags)
             VALUES (new.rowid, new.user_content, new.assistant_content, new.tags);
         END;
+
+        CREATE TABLE IF NOT EXISTS concepts (
+            id          TEXT PRIMARY KEY,
+            label       TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            embedding   BLOB,
+            member_trace_ids  TEXT DEFAULT '[]',
+            member_policy_ids TEXT DEFAULT '[]',
+            metadata    TEXT DEFAULT '{}',
+            created_at  TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_concepts_label
+            ON concepts(label);
+
+        CREATE TABLE IF NOT EXISTS triples (
+            id             TEXT PRIMARY KEY,
+            subject        TEXT NOT NULL,
+            predicate      TEXT NOT NULL,
+            object         TEXT NOT NULL,
+            confidence     REAL NOT NULL DEFAULT 1.0,
+            source_trace_id TEXT,
+            metadata       TEXT DEFAULT '{}',
+            created_at     TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_triples_subject
+            ON triples(subject);
+        CREATE INDEX IF NOT EXISTS idx_triples_predicate
+            ON triples(predicate);
+        CREATE INDEX IF NOT EXISTS idx_triples_object
+            ON triples(object);
     """)
     conn.commit()
 
@@ -95,6 +127,8 @@ def drop_schema(conn_or_cache: CacheConnection) -> None:
         DROP TABLE IF EXISTS traces_fts;
         DROP TABLE IF EXISTS skills;
         DROP TABLE IF EXISTS policies;
+        DROP TABLE IF EXISTS triples;
+        DROP TABLE IF EXISTS concepts;
         DROP TABLE IF EXISTS traces;
     """)
     conn.commit()

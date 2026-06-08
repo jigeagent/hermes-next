@@ -7,9 +7,15 @@ import logging
 from typing import Any, Optional
 
 from hermes_next.cache.connection import CacheConnection
+from hermes_next.cache.lifecycle import LifecycleManager
 from hermes_next.cache.schema import ensure_schema
 from hermes_next.config import HermesNextConfig
 from hermes_next.memos.capture import capture_trace
+from hermes_next.memos.pipeline import (
+    CognitivePipeline,
+    CognitivePipelineConfig,
+    PipelineStage,
+)
 from hermes_next.memos.retrieval import (
     format_results,
     retrieve_semantic,
@@ -31,10 +37,14 @@ class HermesNextProvider:
         self._client: Optional[OpenVikingClient] = None
         self._cache: Optional[CacheConnection] = None
         self._retrieval: Optional[RetrievalPipeline] = None
+        self._pipeline: Optional[CognitivePipeline] = None
+        self._lifecycle: Optional[LifecycleManager] = None
         self._session: Optional[OVSession] = None
         self._agent_name: str = self._config.agent.name
         self._turn_index: int = 0
         self._initialized: bool = False
+        # Session-scoped trace accumulator for cognitive pipeline
+        self._session_traces: list[TraceRow] = []
         # Embedding cache: {text: embedding}
         self._embed_cache: dict[str, list[float]] = {}
         self._embed_cache_max: int = 256
@@ -89,17 +99,39 @@ class HermesNextProvider:
             config=cfg.retrieval,
         )
 
+        # Memory lifecycle manager (archival, decay, cleanup)
+        self._lifecycle = LifecycleManager(
+            cache=self._cache,
+            config=cfg.lifecycle,  # type: ignore[arg-type]
+        )
+
+        # Cognitive pipeline (L1 → Reward → L2 → L3 → Skill)
+        pipeline_enabled_stages = {PipelineStage.L1_CAPTURE}
+        if cfg.cognitive.auto_reward_on_session_end:
+            pipeline_enabled_stages.add(PipelineStage.REWARD)
+        if cfg.cognitive.enable_l2_induction:
+            pipeline_enabled_stages.add(PipelineStage.L2_INDUCTION)
+        if cfg.cognitive.enable_l3_world_model:
+            pipeline_enabled_stages.add(PipelineStage.L3_WORLD_MODEL)
+        if cfg.cognitive.enable_skill_crystallization:
+            pipeline_enabled_stages.add(PipelineStage.SKILL_CRYSTALLIZATION)
+        self._pipeline = CognitivePipeline(
+            config=CognitivePipelineConfig(enabled_stages=pipeline_enabled_stages),
+        )
+
         self._session = OVSession(
             client=self._client,
             session_id=session_id,
             agent_name=self._agent_name,
         )
         self._turn_index = 0
+        self._session_traces = []
         self._initialized = True
         logger.info(
-            "HermesNextProvider initialized (session=%s, agent=%s)",
+            "HermesNextProvider initialized (session=%s, agent=%s, pipeline=%s)",
             session_id,
             self._agent_name,
+            [s.value for s in pipeline_enabled_stages],
         )
 
     def prefetch(self, query: str, *, session_id: str) -> str:
@@ -132,7 +164,7 @@ class HermesNextProvider:
         metadata: Optional[dict[str, Any]] = None,
         tags: Optional[list[str]] = None,
     ) -> None:
-        """Record a single interaction turn as an L1 Trace."""
+        """Record a single interaction turn as an L1 Trace and feed into cognitive pipeline."""
         if not self._client:
             logger.warning("Provider not initialized, skipping turn capture")
             return
@@ -158,6 +190,15 @@ class HermesNextProvider:
 
             repo = TraceRepository(self._cache)
             repo.insert(trace)
+
+            # Trigger lifecycle management (archival/decay if threshold reached)
+            if self._lifecycle:
+                self._lifecycle.on_trace_inserted()
+
+        # Feed into cognitive pipeline (L1 capture stage)
+        if trace and self._pipeline:
+            self._pipeline.process_trace(trace)
+            self._session_traces.append(trace)
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         """Return tool schemas exposed to the Hermes agent."""
@@ -219,6 +260,18 @@ class HermesNextProvider:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "memos_status",
+                    "description": "View cognitive pipeline status: trace/policy/skill counts and promotion stats",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                    },
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
@@ -263,19 +316,85 @@ class HermesNextProvider:
                 lines.append(f"- [{created}] {summary}")
             return "\n".join(lines)
 
+        if tool_name == "memos_status":
+            return self._render_pipeline_status()
+
         return f"Unknown tool: {tool_name}"
 
+    def _render_pipeline_status(self) -> str:
+        """Render cognitive pipeline health and promotion status."""
+        lines = ["## Cognitive Pipeline Status", ""]
+
+        if not self._pipeline:
+            lines.append("Pipeline not initialized.")
+            return "\n".join(lines)
+
+        stats = self._pipeline.get_stats()
+        lines.append(f"**Session traces accumulated:** {len(self._session_traces)}")
+        lines.append(f"**Traces processed:** {stats.get('traces_processed', 0)}")
+        lines.append(f"**Policies induced:** {stats.get('policies', 0)}")
+        lines.append(f"**Skills crystallized:** {stats.get('skills', 0)}")
+        lines.append(f"**Concepts discovered:** {stats.get('concepts', 0)}")
+        lines.append(f"**Triples extracted:** {stats.get('triples', 0)}")
+        lines.append(f"**Enabled stages:** {', '.join(stats.get('enabled_stages', []))}")
+        lines.append("")
+
+        # Add cache and lifecycle stats
+        if self._cache:
+            try:
+                cnt = self._cache.execute(
+                    "SELECT COUNT(*) FROM traces"
+                ).fetchone()[0]
+                lines.append(f"**Total traces in cache:** {cnt}")
+            except Exception:
+                pass
+
+        if self._lifecycle:
+            lc = self._lifecycle.get_stats()
+            lines.append("")
+            lines.append("---")
+            lines.append("### Lifecycle")
+            lines.append(f"**Trace retention:** {lc.get('trace_retention_days', '-')}d")
+            lines.append(f"**Policy decay rate:** {lc.get('policy_decay_rate', '-')}")
+            lines.append(f"**Last cleanup:** {lc.get('last_cleanup', 'never')}")
+            lines.append(f"**Traces since cleanup:** {lc.get('traces_since_cleanup', 0)}")
+
+        return "\n".join(lines)
+
     def shutdown(self) -> None:
-        """Close the OpenViking connection and local cache."""
+        """Close the OpenViking connection, local cache, and reset pipeline state."""
         if self._client:
             self._client.close()
         if self._cache:
             self._cache.close_all()
+        if self._pipeline:
+            self._pipeline.reset()
+        self._session_traces = []
         self._initialized = False
         logger.info("HermesNextProvider shut down")
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        """Called when the Hermes session ends — commit OV session."""
+        """Called when the Hermes session ends.
+
+        Runs the cognitive pipeline (Reward → L2 → L3 → Skill) on
+        accumulated session traces, persists new policies/skills, and
+        commits the OpenViking session.
+        """
+        # Run cognitive pipeline on accumulated traces
+        if self._pipeline and self._session_traces:
+            try:
+                results = self._pipeline.process_session_end(
+                    traces=self._session_traces,
+                    session_success=bool(messages),
+                )
+                self._persist_pipeline_results(results)
+            except Exception as e:
+                logger.warning("Cognitive pipeline failed: %s", e)
+
+        # Reset session state
+        self._session_traces = []
+
+        # Commit OpenViking session
         if self._session:
             import asyncio
 
@@ -283,6 +402,71 @@ class HermesNextProvider:
                 asyncio.run(self._session.commit())
             except Exception as e:
                 logger.warning("Session commit failed: %s", e)
+
+    def _persist_pipeline_results(self, results: dict[str, Any]) -> None:
+        """Persist cognitive pipeline results (new policies/skills/concepts) to local cache."""
+        if not self._cache:
+            return
+
+        # Persist new policies
+        new_policies = results.get("new_policies", [])
+        if new_policies:
+            from hermes_next.cache.policies import PolicyRepository
+
+            repo = PolicyRepository(self._cache)
+            for policy in new_policies:
+                try:
+                    repo.insert(policy)
+                except Exception as e:
+                    logger.warning("Failed to persist policy %s: %s", policy.name, e)
+
+        # Persist new skills
+        new_skills = results.get("new_skills", [])
+        if new_skills:
+            from hermes_next.cache.skills import SkillRepository
+
+            repo = SkillRepository(self._cache)
+            for skill in new_skills:
+                try:
+                    repo.insert(skill)
+                except Exception as e:
+                    logger.warning("Failed to persist skill %s: %s", skill.name, e)
+
+        # Persist new concepts
+        new_concepts = results.get("new_concepts", [])
+        if new_concepts:
+            from hermes_next.cache.concepts import ConceptRepository
+
+            repo = ConceptRepository(self._cache)
+            for concept in new_concepts:
+                try:
+                    repo.insert(concept)
+                except Exception as e:
+                    logger.warning("Failed to persist concept %s: %s", concept.id, e)
+
+        # Persist triples extracted by the pipeline
+        pipeline_triples = results.get("stage", {}).get("world_model", {}).get("triples_extracted", 0)
+        if pipeline_triples > 0 and self._pipeline:
+            from hermes_next.cache.concepts import TripleRepository
+
+            repo = TripleRepository(self._cache)
+            for triple in self._pipeline.triples:
+                try:
+                    repo.insert(triple)
+                except Exception as e:
+                    logger.warning("Failed to persist triple %s: %s", triple.id, e)
+
+        # Persist updated traces (with reward values)
+        updated_traces = results.get("updated_traces", [])
+        if updated_traces and len(updated_traces) != len(self._session_traces):
+            from hermes_next.cache.traces import TraceRepository
+
+            repo = TraceRepository(self._cache)
+            for trace in updated_traces:
+                try:
+                    repo.insert(trace)
+                except Exception as e:
+                    logger.warning("Failed to persist updated trace %s: %s", trace.id, e)
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Generate a memory summary for context compression."""
@@ -306,14 +490,14 @@ class HermesNextProvider:
         session_id: str,
         target_agent: Optional[str] = None,
     ) -> None:
-        """Record sub-agent delegation as a tagged trace."""
+        """Record sub-agent delegation as a tagged trace and feed into pipeline."""
         if not self._client:
             return
         self._turn_index += 1
         tags = ["delegation"]
         if target_agent:
             tags.append(f"agent:{target_agent}")
-        capture_trace(
+        trace = capture_trace(
             client=self._client,
             session_id=session_id,
             turn_index=self._turn_index,
@@ -323,3 +507,8 @@ class HermesNextProvider:
             tags=tags,
             metadata={"type": "delegation", "target_agent": target_agent},
         )
+
+        # Also feed delegation into cognitive pipeline
+        if trace and self._pipeline:
+            self._pipeline.process_trace(trace)
+            self._session_traces.append(trace)

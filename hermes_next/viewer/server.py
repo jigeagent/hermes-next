@@ -82,6 +82,8 @@ class _APIHandler(BaseHTTPRequestHandler):
                 self._handle_concepts()
             elif path == "/api/triples":
                 self._handle_triples()
+            elif path == "/api/pipeline":
+                self._handle_pipeline()
             elif path == "/api/timeline":
                 self._handle_timeline(params)
             elif path == "/api/search":
@@ -101,11 +103,15 @@ class _APIHandler(BaseHTTPRequestHandler):
         trace_count = db.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
         policy_count = db.execute("SELECT COUNT(*) FROM policies").fetchone()[0]
         skill_count = db.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+        concept_count = db.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
+        triple_count = db.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
         synced_count = db.execute("SELECT COUNT(*) FROM traces WHERE synced=1").fetchone()[0]
         self._send_json({
             "traces": trace_count,
             "policies": policy_count,
             "skills": skill_count,
+            "concepts": concept_count,
+            "triples": triple_count,
             "synced": synced_count,
             "ov_url": self._ov_url,
         })
@@ -166,15 +172,66 @@ class _APIHandler(BaseHTTPRequestHandler):
         self._send_json({"skills": skills, "count": len(skills)})
 
     def _handle_concepts(self) -> None:
-        self._send_json({
-            "concepts": [],
-            "message": "Concepts stored in OpenViking — connect OV server to view.",
-        })
+        db = self._get_db()
+        try:
+            rows = db.execute(
+                "SELECT * FROM concepts ORDER BY created_at DESC LIMIT 100"
+            ).fetchall()
+            concepts = [dict(r) for r in rows]
+            for c in concepts:
+                self._serialize_concept(c)
+            self._send_json({"concepts": concepts, "count": len(concepts)})
+        except Exception as e:
+            self._send_json({"concepts": [], "count": 0, "error": str(e)})
 
     def _handle_triples(self) -> None:
+        db = self._get_db()
+        try:
+            rows = db.execute(
+                "SELECT * FROM triples ORDER BY created_at DESC LIMIT 200"
+            ).fetchall()
+            triples = [dict(r) for r in rows]
+            self._send_json({"triples": triples, "count": len(triples)})
+        except Exception as e:
+            self._send_json({"triples": [], "count": 0, "error": str(e)})
+
+    def _handle_pipeline(self) -> None:
+        """Return aggregated pipeline promotion data."""
+        db = self._get_db()
+        trace_count = db.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
+        policy_count = db.execute("SELECT COUNT(*) FROM policies").fetchone()[0]
+        skill_count = db.execute("SELECT COUNT(*) FROM skills").fetchone()[0]
+        concept_count = db.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
+        triple_count = db.execute("SELECT COUNT(*) FROM triples").fetchone()[0]
+
+        # Reward distribution
+        reward_stats = db.execute(
+            "SELECT ROUND(AVG(reward),3) as avg_reward, "
+            "ROUND(MAX(reward),3) as max_reward, "
+            "ROUND(MIN(reward),3) as min_reward "
+            "FROM traces WHERE reward != 0"
+        ).fetchone()
+
+        # Top policies by confidence
+        top_policies = db.execute(
+            "SELECT id, name, confidence, activation_count "
+            "FROM policies ORDER BY confidence DESC LIMIT 5"
+        ).fetchall()
+
         self._send_json({
-            "triples": [],
-            "message": "Triples stored in OpenViking — connect OV server to view.",
+            "counts": {
+                "traces": trace_count,
+                "policies": policy_count,
+                "skills": skill_count,
+                "concepts": concept_count,
+                "triples": triple_count,
+            },
+            "reward_stats": {
+                "avg": reward_stats[0] if reward_stats else 0,
+                "max": reward_stats[1] if reward_stats else 0,
+                "min": reward_stats[2] if reward_stats else 0,
+            },
+            "top_policies": [dict(r) for r in top_policies],
         })
 
     def _handle_timeline(self, params: dict[str, list[str]]) -> None:
@@ -229,6 +286,22 @@ class _APIHandler(BaseHTTPRequestHandler):
                 t["metadata"] = json.loads(t["metadata"])
             except (json.JSONDecodeError, TypeError):
                 t["metadata"] = {}
+
+    @staticmethod
+    def _serialize_concept(c: dict[str, Any]) -> None:
+        """Convert concept JSON string fields to displayable objects."""
+        for key in ("member_trace_ids", "member_policy_ids", "metadata"):
+            if key in c and isinstance(c[key], str):
+                try:
+                    c[key] = json.loads(c[key])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        if c.get("embedding") and isinstance(c["embedding"], str):
+            try:
+                emb = json.loads(c["embedding"])
+                c["embedding"] = f"float[{len(emb)}]"
+            except (json.JSONDecodeError, TypeError):
+                c["embedding"] = "N/A"
 
     @staticmethod
     def _serialize_json_fields(row: dict[str, Any]) -> None:
@@ -394,6 +467,9 @@ _SPA_HTML = r"""<!DOCTYPE html>
       <a href="#" data-view="traces">Traces</a>
       <a href="#" data-view="policies">Policies</a>
       <a href="#" data-view="skills">Skills</a>
+      <a href="#" data-view="pipeline">Pipeline ⚡</a>
+      <a href="#" data-view="concepts">Concepts</a>
+      <a href="#" data-view="triples">Triples</a>
       <a href="#" data-view="timeline">Timeline</a>
       <a href="#" data-view="search">Search</a>
     </nav>
@@ -435,6 +511,8 @@ async function renderDashboard() {
       <div class="card"><div class="num">${s.traces}</div><div class="label">Traces</div></div>
       <div class="card"><div class="num">${s.policies}</div><div class="label">Policies</div></div>
       <div class="card"><div class="num">${s.skills}</div><div class="label">Skills</div></div>
+      <div class="card"><div class="num">${s.concepts ?? 0}</div><div class="label">Concepts</div></div>
+      <div class="card"><div class="num">${s.triples ?? 0}</div><div class="label">Triples</div></div>
       <div class="card"><div class="num">${s.synced}</div><div class="label">Synced</div></div>
     </div>
     <div class="card">
@@ -595,6 +673,86 @@ async function doSearch() {
   `;
 }
 
+// ── Pipeline View ──
+
+async function renderPipeline() {
+  const data = await api('/api/pipeline');
+  const c = data.counts || {};
+  const r = data.reward_stats || {};
+  const top = data.top_policies || [];
+  document.getElementById('view-container').innerHTML = `
+    <h2>Pipeline ⚡</h2>
+    <div class="stats">
+      <div class="card"><div class="num">${c.traces ?? 0}</div><div class="label">L1 Traces</div></div>
+      <div class="card"><div class="num">${c.policies ?? 0}</div><div class="label">L2 Policies</div></div>
+      <div class="card"><div class="num">${c.skills ?? 0}</div><div class="label">Skills</div></div>
+      <div class="card"><div class="num">${c.concepts ?? 0}</div><div class="label">L3 Concepts</div></div>
+      <div class="card"><div class="num">${c.triples ?? 0}</div><div class="label">Triples</div></div>
+    </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div class="label mb-1">Reward Distribution</div>
+      <div>Avg: <strong>${r.avg ?? '-'}</strong> · Max: <strong>${r.max ?? '-'}</strong> · Min: <strong>${r.min ?? '-'}</strong></div>
+    </div>
+    <h3 class="mb-1">Top Policies</h3>
+    <table>
+      <thead><tr><th>Name</th><th>Confidence</th><th>Activations</th></tr></thead>
+      <tbody>
+        ${top.map(p => `<tr>
+          <td><strong>${escape(p.name)}</strong></td>
+          <td><span class="badge ${p.confidence >= 0.5 ? 'badge-success' : 'badge-warning'}">${p.confidence?.toFixed(3)}</span></td>
+          <td>${p.activation_count ?? 0}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ── Concepts View ──
+
+async function renderConcepts() {
+  const data = await api('/api/concepts');
+  const concepts = data.concepts || [];
+  document.getElementById('view-container').innerHTML = `
+    <h2>Concepts</h2>
+    <p class="muted mb-1">${data.count} concepts</p>
+    <table>
+      <thead><tr><th>Label</th><th>Description</th><th>Traces</th><th>Policies</th><th>Created</th></tr></thead>
+      <tbody>
+        ${concepts.map(c => `<tr>
+          <td><strong>${escape(c.label)}</strong></td>
+          <td>${escape(c.description).slice(0,60)}</td>
+          <td>${Array.isArray(c.member_trace_ids) ? c.member_trace_ids.length : 0}</td>
+          <td>${Array.isArray(c.member_policy_ids) ? c.member_policy_ids.length : 0}</td>
+          <td>${fmtTime(c.created_at)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+// ── Triples View ──
+
+async function renderTriples() {
+  const data = await api('/api/triples');
+  const triples = data.triples || [];
+  document.getElementById('view-container').innerHTML = `
+    <h2>Triples</h2>
+    <p class="muted mb-1">${data.count} triples</p>
+    <table>
+      <thead><tr><th>Subject</th><th>Predicate</th><th>Object</th><th>Confidence</th><th>Created</th></tr></thead>
+      <tbody>
+        ${triples.map(t => `<tr>
+          <td>${escape(t.subject).slice(0,30)}</td>
+          <td><span class="badge badge-info">${escape(t.predicate)}</span></td>
+          <td>${escape(t.object).slice(0,30)}</td>
+          <td>${t.confidence?.toFixed(2) ?? '-'}</td>
+          <td>${fmtTime(t.created_at)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
 // ── Navigation ──
 
 const VIEWS = {
@@ -602,6 +760,9 @@ const VIEWS = {
   traces: renderTraces,
   policies: renderPolicies,
   skills: renderSkills,
+  pipeline: renderPipeline,
+  concepts: renderConcepts,
+  triples: renderTriples,
   timeline: renderTimeline,
   search: renderSearch,
 };

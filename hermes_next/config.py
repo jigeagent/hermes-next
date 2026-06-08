@@ -53,6 +53,46 @@ class RetrievalConfig:
 
 
 @dataclass
+class CognitiveConfig:
+    """Cognitive pipeline settings — L1 → Reward → L2 → L3 → Skill."""
+
+    auto_reward_on_session_end: bool = True
+    """Automatically apply session-level reward when session ends."""
+
+    enable_l2_induction: bool = True
+    """Enable L2 Policy induction from rewarded traces."""
+
+    enable_l3_world_model: bool = False
+    """Enable L3 World Model abstraction (opt-in, more expensive)."""
+
+    enable_skill_crystallization: bool = False
+    """Enable Skill crystallization from high-confidence policies (opt-in)."""
+
+    min_policies_before_skill: int = 3
+    """Minimum policies needed before skill crystallization activates."""
+
+    min_traces_before_l2: int = 5
+    """Minimum traces before L2 induction is attempted."""
+
+
+@dataclass
+class LifecycleConfig:
+    """Memory lifecycle settings — archive, decay, and cleanup."""
+
+    trace_retention_days: int = 90
+    """Traces older than this many days are archived (deleted from local cache)."""
+
+    policy_decay_rate: float = 0.03
+    """Confidence decay per day of inactivity (0.0 = no decay)."""
+
+    policy_min_confidence: float = 0.05
+    """Policies below this confidence are pruned."""
+
+    cleanup_interval_traces: int = 500
+    """Run cleanup every N new traces."""
+
+
+@dataclass
 class HermesNextConfig:
     """Top-level configuration."""
 
@@ -60,6 +100,8 @@ class HermesNextConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    cognitive: CognitiveConfig = field(default_factory=CognitiveConfig)
+    lifecycle: LifecycleConfig = field(default_factory=LifecycleConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "HermesNextConfig":
@@ -120,6 +162,32 @@ class HermesNextConfig:
                         "rrf_k", "mmr_lambda", "mmr_k", "recency_decay"):
                 if key in r:
                     setattr(self.retrieval, key, r[key])
+
+        if "cognitive" in data:
+            cog = data["cognitive"]
+            if "auto_reward_on_session_end" in cog:
+                self.cognitive.auto_reward_on_session_end = bool(cog["auto_reward_on_session_end"])
+            if "enable_l2_induction" in cog:
+                self.cognitive.enable_l2_induction = bool(cog["enable_l2_induction"])
+            if "enable_l3_world_model" in cog:
+                self.cognitive.enable_l3_world_model = bool(cog["enable_l3_world_model"])
+            if "enable_skill_crystallization" in cog:
+                self.cognitive.enable_skill_crystallization = bool(cog["enable_skill_crystallization"])
+            if "min_policies_before_skill" in cog:
+                self.cognitive.min_policies_before_skill = int(cog["min_policies_before_skill"])
+            if "min_traces_before_l2" in cog:
+                self.cognitive.min_traces_before_l2 = int(cog["min_traces_before_l2"])
+
+        if "lifecycle" in data:
+            lc = data["lifecycle"]
+            if "trace_retention_days" in lc:
+                self.lifecycle.trace_retention_days = int(lc["trace_retention_days"])
+            if "policy_decay_rate" in lc:
+                self.lifecycle.policy_decay_rate = float(lc["policy_decay_rate"])
+            if "policy_min_confidence" in lc:
+                self.lifecycle.policy_min_confidence = float(lc["policy_min_confidence"])
+            if "cleanup_interval_traces" in lc:
+                self.lifecycle.cleanup_interval_traces = int(lc["cleanup_interval_traces"])
 
     def _apply_env_overrides(self) -> None:
         """Apply environment variable overrides."""

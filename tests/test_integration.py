@@ -9,11 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_next.cache.concepts import ConceptRepository, TripleRepository
 from hermes_next.cache.connection import CacheConnection
+from hermes_next.cache.lifecycle import LifecycleConfig, LifecycleManager
 from hermes_next.cache.schema import drop_schema, ensure_schema
 from hermes_next.cache.traces import TraceRepository
 from hermes_next.config import HermesNextConfig
 from hermes_next.memos.types import TraceRow
+from hermes_next.memos.world_model import Concept, Triple
 from hermes_next.provider import HermesNextProvider
 from hermes_next.retrieval.pipeline import RetrievalPipeline
 
@@ -112,11 +115,14 @@ class TestRetrievalPipelineIntegration:
 class TestProviderIntegration:
     """Full provider integration."""
 
+    @patch("hermes_next.provider.CacheConnection")
     @patch("hermes_next.provider.OpenVikingClient")
-    def test_full_lifecycle(self, mock_client_class):
+    def test_full_lifecycle(self, mock_client_class, mock_cache_class):
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
         mock_client.health.return_value = True
+        mock_client.embed.return_value = [0.1, 0.2]
+        mock_client.content_write.return_value = True
         mock_client.search_find.return_value = [
             {"id": "1", "content": "memory", "score": 0.9}
         ]
@@ -130,13 +136,6 @@ class TestProviderIntegration:
         # Prefetch
         ctx = provider.prefetch("test", session_id="int-test")
         assert isinstance(ctx, str)
-
-        # Sync turn
-        provider.sync_turn(
-            user_content="hello",
-            assistant_content="world",
-            session_id="int-test",
-        )
 
         # Tool calls
         search_result = provider.handle_tool_call("memos_search", {"query": "test"})
@@ -153,3 +152,131 @@ class TestProviderIntegration:
 
         provider.shutdown()
         assert provider._initialized is False
+
+
+class TestConceptRepository:
+    """Concept and Triple repository CRUD."""
+
+    def test_concept_crud(self, temp_cache):
+        repo = ConceptRepository(temp_cache)
+        assert repo.count() == 0
+
+        concept = Concept(
+            id="cpt-1",
+            label="test_concept",
+            description="A test concept",
+            embedding=[0.1, 0.2],
+            member_trace_ids=["t1", "t2"],
+        )
+        repo.insert(concept)
+        assert repo.count() == 1
+
+        fetched = repo.get("cpt-1")
+        assert fetched is not None
+        assert fetched.label == "test_concept"
+        assert fetched.member_trace_ids == ["t1", "t2"]
+
+    def test_triple_crud(self, temp_cache):
+        repo = TripleRepository(temp_cache)
+        assert repo.count() == 0
+
+        triple = Triple(
+            id="tri-1",
+            subject="Python",
+            predicate="is_a",
+            object_="programming language",
+            confidence=0.95,
+            source_trace_id="t1",
+        )
+        repo.insert(triple)
+        assert repo.count() == 1
+
+        # Query by subject
+        results = repo.query(subject="Python")
+        assert len(results) == 1
+        assert results[0].object_ == "programming language"
+
+    def test_triple_batch_insert(self, temp_cache):
+        repo = TripleRepository(temp_cache)
+        triples = [
+            Triple(id=f"tri-{i}", subject="A", predicate="related_to", object_=f"Object{i}")
+            for i in range(5)
+        ]
+        repo.insert_batch(triples)
+        assert repo.count() == 5
+
+
+class TestLifecycleManager:
+    """Lifecycle manager basic operations."""
+
+    def test_archive_old_traces(self, temp_cache):
+        repo = TraceRepository(temp_cache)
+        repo.insert(TraceRow(
+            id="old-trace", session_id="s1", turn_index=0,
+            user_content="old", assistant_content="old",
+            created_at="2020-01-01T00:00:00",
+        ))
+        # Mark as synced so it's eligible for archival
+        repo.mark_synced("old-trace")
+        repo.insert(TraceRow(
+            id="new-trace", session_id="s1", turn_index=1,
+            user_content="new", assistant_content="new",
+            created_at="2025-06-08T00:00:00",
+        ))
+
+        config = LifecycleConfig(trace_retention_days=30)
+        manager = LifecycleManager(temp_cache, config)
+        archived = manager._archive_old_traces()
+        assert archived >= 1
+
+    def test_get_stats(self, temp_cache):
+        manager = LifecycleManager(temp_cache)
+        stats = manager.get_stats()
+        assert "trace_count" in stats
+        assert "policy_count" in stats
+        assert "last_cleanup" in stats
+
+
+class TestProviderWithCognitivePipeline:
+    """Provider cognitive pipeline integration tests."""
+
+    @patch("hermes_next.provider.OpenVikingClient")
+    def test_pipeline_status_tool(self, mock_client_class):
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.health.return_value = True
+
+        config = HermesNextConfig()
+        provider = HermesNextProvider(config)
+        provider.initialize(session_id="pipeline-test")
+
+        # memos_status should render pipeline info
+        status = provider.handle_tool_call("memos_status", {})
+        assert isinstance(status, str)
+        assert "Pipeline" in status or "Status" in status
+
+        provider.shutdown()
+
+    @patch("hermes_next.provider.OpenVikingClient")
+    @patch("hermes_next.provider.CacheConnection")
+    def test_cognitive_pipeline_wired(self, mock_cache_class, mock_client_class):
+        """Verify sync_turn feeds into cognitive pipeline."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        # capture_trace returns a trace
+        mock_client.embed.return_value = [0.1, 0.2]
+        mock_client.content_write.return_value = True
+
+        config = HermesNextConfig()
+        provider = HermesNextProvider(config)
+        provider.initialize(session_id="wire-test")
+
+        # sync_turn should add a trace to session_traces via pipeline
+        provider.sync_turn(
+            user_content="test user",
+            assistant_content="test assistant",
+            session_id="wire-test",
+        )
+        assert len(provider._session_traces) >= 1
+
+        provider.shutdown()
