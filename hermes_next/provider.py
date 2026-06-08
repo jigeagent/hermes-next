@@ -10,17 +10,14 @@ from hermes_next.cache.connection import CacheConnection
 from hermes_next.cache.lifecycle import LifecycleManager
 from hermes_next.cache.schema import ensure_schema
 from hermes_next.config import HermesNextConfig
+from hermes_next.integration.native import NativeMemoryClient, NativeMemoryConfig
 from hermes_next.memos.capture import capture_trace
 from hermes_next.memos.pipeline import (
     CognitivePipeline,
     CognitivePipelineConfig,
     PipelineStage,
 )
-from hermes_next.memos.retrieval import (
-    format_results,
-    retrieve_semantic,
-    retrieve_timeline,
-)
+from hermes_next.memos.retrieval import format_results, retrieve_semantic, retrieve_timeline
 from hermes_next.memos.types import TraceRow
 from hermes_next.ov.client import OpenVikingClient
 from hermes_next.ov.session import OVSession
@@ -39,6 +36,7 @@ class HermesNextProvider:
         self._retrieval: Optional[RetrievalPipeline] = None
         self._pipeline: Optional[CognitivePipeline] = None
         self._lifecycle: Optional[LifecycleManager] = None
+        self._native: Optional[NativeMemoryClient] = None
         self._session: Optional[OVSession] = None
         self._agent_name: str = self._config.agent.name
         self._turn_index: int = 0
@@ -105,6 +103,17 @@ class HermesNextProvider:
             config=cfg.lifecycle,  # type: ignore[arg-type]
         )
 
+        # Native Hermes Agent memory bridge (MEMORY.md sync + session_search)
+        self._native = NativeMemoryClient(
+            config=NativeMemoryConfig(
+                sync_memory_md=cfg.integration.sync_memory_md,
+                promote_on_l2_confidence=cfg.integration.promote_on_l2_confidence,
+                promote_on_skill_crystallize=cfg.integration.promote_on_skill_crystallize,
+                session_search_fallback=cfg.integration.session_search_fallback,
+                session_search_max_results=cfg.integration.session_search_max_results,
+            ),
+        )
+
         # Cognitive pipeline (L1 → Reward → L2 → L3 → Skill)
         pipeline_enabled_stages = {PipelineStage.L1_CAPTURE}
         if cfg.cognitive.auto_reward_on_session_end:
@@ -138,8 +147,8 @@ class HermesNextProvider:
         """Fusion retrieval: OpenViking semantic + local FTS5 + timeline,
         fused via RRF, boosted by recency, diversified by MMR.
 
-        Replaced the earlier inline multi-tier merge with the full
-        6-step RetrievalPipeline in v0.2.1.
+        Falls through to Hermes Agent native session_search (state.db FTS5)
+        when the pipeline returns no results (v0.3.1+).
         """
         if not self._client or not self._retrieval:
             return ""
@@ -153,7 +162,22 @@ class HermesNextProvider:
             query_embedding=query_embedding,
         )
 
-        return format_results(results)
+        formatted = format_results(results)
+
+        # Fall through to Hermes Agent native session_search when pipeline returns empty
+        if not formatted and self._native:
+            session_results = self._native.session_search(
+                query=query,
+                limit=self._config.integration.session_search_max_results,
+            )
+            if session_results:
+                formatted = self._native.format_session_results(session_results)
+                logger.debug(
+                    "session_search fallback: %d results for '%s'",
+                    len(session_results), query[:60],
+                )
+
+        return formatted
 
     def sync_turn(  # noqa: PLR0913
         self,
@@ -359,6 +383,20 @@ class HermesNextProvider:
             lines.append(f"**Last cleanup:** {lc.get('last_cleanup', 'never')}")
             lines.append(f"**Traces since cleanup:** {lc.get('traces_since_cleanup', 0)}")
 
+        if self._native:
+            ni = self._native.get_stats()
+            lines.append("")
+            lines.append("---")
+            lines.append("### 原生集成")
+            lines.append(f"**MEMORY.md 同步:** {'✅' if ni.get('sync_enabled') else '❌'}")
+            lines.append(f"**session_search 回退:** {'✅' if ni.get('session_search_enabled') else '❌'}")
+            if ni.get("memory_md_exists"):
+                pct = ni.get("memory_md_usage_ratio", 0) * 100
+                lines.append(f"**MEMORY.md 使用率:** {pct:.0f}% ({ni.get('memory_md_sections', 0)} 条)")
+                lines.append(f"**已晋升条目:** {ni.get('memory_md_promoted', 0)}")
+            if ni.get("state_db_exists"):
+                lines.append(f"**state.db 大小:** {ni.get('state_db_size_mb', 0)}MB")
+
         return "\n".join(lines)
 
     def shutdown(self) -> None:
@@ -417,6 +455,14 @@ class HermesNextProvider:
             for policy in new_policies:
                 try:
                     repo.insert(policy)
+                    # Promote high-confidence policies to native MEMORY.md
+                    if self._native:
+                        self._native.promote_policy(
+                            name=policy.name,
+                            trigger=policy.trigger_pattern,
+                            action=policy.action_template,
+                            confidence=policy.confidence,
+                        )
                 except Exception as e:
                     logger.warning("Failed to persist policy %s: %s", policy.name, e)
 
@@ -429,6 +475,12 @@ class HermesNextProvider:
             for skill in new_skills:
                 try:
                     repo.insert(skill)
+                    # Promote crystallized skills to native MEMORY.md
+                    if self._native:
+                        self._native.promote_skill(
+                            name=skill.name,
+                            description=skill.description,
+                        )
                 except Exception as e:
                     logger.warning("Failed to persist skill %s: %s", skill.name, e)
 

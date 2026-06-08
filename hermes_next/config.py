@@ -93,6 +93,26 @@ class LifecycleConfig:
 
 
 @dataclass
+class IntegrationConfig:
+    """Native Hermes Agent memory integration settings."""
+
+    sync_memory_md: bool = True
+    """Auto-write high-value summaries to Hermes Agent native MEMORY.md."""
+
+    promote_on_l2_confidence: float = 0.5
+    """L2 Policy confidence threshold for MEMORY.md promotion."""
+
+    promote_on_skill_crystallize: bool = True
+    """Write crystallized skill summaries to MEMORY.md."""
+
+    session_search_fallback: bool = True
+    """Fall back to Hermes Agent state.db FTS5 when hermes-next returns empty."""
+
+    session_search_max_results: int = 5
+    """Max results from session_search fallback."""
+
+
+@dataclass
 class HermesNextConfig:
     """Top-level configuration."""
 
@@ -102,6 +122,7 @@ class HermesNextConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     cognitive: CognitiveConfig = field(default_factory=CognitiveConfig)
     lifecycle: LifecycleConfig = field(default_factory=LifecycleConfig)
+    integration: IntegrationConfig = field(default_factory=IntegrationConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "HermesNextConfig":
@@ -188,6 +209,19 @@ class HermesNextConfig:
                 self.lifecycle.policy_min_confidence = float(lc["policy_min_confidence"])
             if "cleanup_interval_traces" in lc:
                 self.lifecycle.cleanup_interval_traces = int(lc["cleanup_interval_traces"])
+
+        if "integration" in data:
+            ig = data["integration"]
+            if "sync_memory_md" in ig:
+                self.integration.sync_memory_md = bool(ig["sync_memory_md"])
+            if "promote_on_l2_confidence" in ig:
+                self.integration.promote_on_l2_confidence = float(ig["promote_on_l2_confidence"])
+            if "promote_on_skill_crystallize" in ig:
+                self.integration.promote_on_skill_crystallize = bool(ig["promote_on_skill_crystallize"])
+            if "session_search_fallback" in ig:
+                self.integration.session_search_fallback = bool(ig["session_search_fallback"])
+            if "session_search_max_results" in ig:
+                self.integration.session_search_max_results = int(ig["session_search_max_results"])
 
     def _apply_env_overrides(self) -> None:
         """Apply environment variable overrides."""

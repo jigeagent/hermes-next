@@ -43,22 +43,22 @@ class OpenVikingClient:
             headers["Authorization"] = f"Bearer {api_key}"
 
         # Connection pool: 10 connections, keep-alive
-        # httpx >=0.28 removed PoolLimits; pass limits directly to transport
+        # httpx >=0.23 uses Limits instead of PoolLimits
         try:
-            transport = httpx.HTTPTransport(
-                retries=max_retries,
-                pool_limits=httpx.PoolLimits(
-                    max_connections=10,
-                    max_keepalive_connections=5,
-                ),
-            )
-        except AttributeError:
-            # httpx >= 0.28: PoolLimits removed, use max_connections directly
-            transport = httpx.HTTPTransport(
-                retries=max_retries,
+            limits = httpx.Limits(
                 max_connections=10,
                 max_keepalive_connections=5,
             )
+        except AttributeError:
+            # Older httpx versions use PoolLimits
+            limits = httpx.PoolLimits(
+                max_connections=10,
+                max_keepalive_connections=5,
+            )
+        transport = httpx.HTTPTransport(
+            retries=max_retries,
+            limits=limits,
+        )
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
