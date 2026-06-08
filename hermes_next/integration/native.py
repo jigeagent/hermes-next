@@ -33,13 +33,13 @@ DEFAULT_STATE_DB = DEFAULT_HERMES_HOME / "state.db"
 class NativeMemoryConfig:
     """Configuration for native memory integration."""
 
-    sync_memory_md: bool = True
+    sync_memory_md: bool = False
     """Whether to auto-write summaries to MEMORY.md."""
 
-    promote_on_l2_confidence: float = 0.5
+    promote_on_l2_confidence: float = 0.8
     """L2 Policy confidence threshold for promotion to MEMORY.md."""
 
-    promote_on_skill_crystallize: bool = True
+    promote_on_skill_crystallize: bool = False
     """Whether to write crystallized skill summaries to MEMORY.md."""
 
     max_entry_chars: int = 150
@@ -205,14 +205,17 @@ class NativeMemoryClient:
         """Check if MEMORY.md exceeds the capacity warning threshold."""
         return self.usage_ratio() >= self._config.memory_md_capacity_warning
 
+    # Auto-generated tag prefixes that can be trimmed
+    _AUTO_TAG_PREFIXES = ("🧠", "📋", "🔧", "🌐", "🔍")
+
     def _trim(self, current: str, needed_space: int) -> bool:
-        """Trim oldest non-tagged entries to make room.
+        """Trim oldest non-manual entries to make room.
 
         Removal order:
-        1. Oldest auto-promoted entries (tagged with 🧠)
-        2. Oldest manual entries (if still not enough)
+        1. Oldest auto-promoted entries (🧠 / 📋 / 🔧 / 🌐 / 🔍)
+        2. Oldest non-manual entries if still over capacity
 
-        Never removes locked/critical entries without explicit tag.
+        Never removes locked/critical entries tagged with 📝.
         """
         sections = current.split(MEMORY_SECTION_DELIMITER)
         kept: list[str] = []
@@ -232,9 +235,11 @@ class NativeMemoryClient:
                 continue
 
             # Remove oldest auto-promoted entries until we have room
-            if estimated_new_len > NATIVE_MEMORY_MAX_CHARS and stripped.startswith(PROMOTED_TAG):
+            if estimated_new_len > NATIVE_MEMORY_MAX_CHARS and any(
+                stripped.startswith(t) for t in self._AUTO_TAG_PREFIXES
+            ):
                 removed += 1
-                estimated_new_len -= len(stripped) + 3  # +delimiter+newlines
+                estimated_new_len -= len(stripped) + 3
                 continue
 
             kept.append(stripped)
@@ -260,6 +265,61 @@ class NativeMemoryClient:
         self.write_memory_md(new_content)
         logger.info("Trimmed %d entries from MEMORY.md to free space", removed)
         return True
+
+    def trim_to_fit(self) -> int:
+        """Trim MEMORY.md down to fit within the native limit.
+
+        Can be called proactively (e.g. from lifecycle manager) regardless
+        of whether a new entry is being promoted.
+
+        Returns:
+            Number of entries trimmed.
+        """
+        current = self.read_memory_md()
+        if not current:
+            return 0
+        if len(current) <= NATIVE_MEMORY_MAX_CHARS:
+            return 0
+
+        sections = current.split(MEMORY_SECTION_DELIMITER)
+        kept: list[str] = []
+        removed = 0
+        estimated_len = len(current)
+
+        for sec in sections:
+            stripped = sec.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("📝"):
+                kept.append(stripped)
+                continue
+            if estimated_len > NATIVE_MEMORY_MAX_CHARS and any(
+                stripped.startswith(t) for t in self._AUTO_TAG_PREFIXES
+            ):
+                removed += 1
+                estimated_len -= len(stripped) + 3
+                continue
+            kept.append(stripped)
+
+        if removed == 0 and estimated_len > NATIVE_MEMORY_MAX_CHARS:
+            # Last resort: remove oldest non-manual entries
+            extra: list[str] = []
+            for entry in kept:
+                if estimated_len > NATIVE_MEMORY_MAX_CHARS and not entry.startswith("📝"):
+                    removed += 1
+                    estimated_len -= len(entry) + 3
+                    continue
+                extra.append(entry)
+            kept = extra
+
+        new_content = f"\n{MEMORY_SECTION_DELIMITER}\n".join(kept)
+        if new_content:
+            new_content += f"\n{MEMORY_SECTION_DELIMITER}\n"
+        if new_content != current:
+            self.write_memory_md(new_content)
+        logger.info("trim_to_fit: removed %d entries, %d chars → %d chars",
+                     removed, len(current), len(new_content))
+        return removed
 
     # ── state.db Session Search Fallback ──────────────────
 

@@ -78,11 +78,11 @@ class TestPromotion:
         assert "🔧" in content  # skill tag
 
     def test_promote_policy_below_threshold(self, client):
-        ok = client.promote_policy("test-policy", "trigger", "action", confidence=0.3)
-        assert ok is False  # below default 0.5 threshold
+        ok = client.promote_policy("test-policy", "trigger", "action", confidence=0.5)
+        assert ok is False  # below default 0.8 threshold
 
     def test_promote_policy_above_threshold(self, client):
-        ok = client.promote_policy("test-policy", "trigger text", "action text", confidence=0.7)
+        ok = client.promote_policy("test-policy", "trigger text", "action text", confidence=0.9)
         assert ok is True
         content = client.read_memory_md()
         assert "📋" in content
@@ -131,6 +131,31 @@ class TestCapacityManagement:
         large = "x" * int(NATIVE_MEMORY_MAX_CHARS * 0.85)
         client.write_memory_md(f"{large}§")
         assert client.needs_trim() is True
+
+    def test_trim_to_fit(self, client):
+        """trim_to_fit proactively reduces MEMORY.md size."""
+        # Fill over capacity with auto-promoted entries
+        content = ""
+        for i in range(30):
+            content += f"🧠 auto entry {i}\n{MEMORY_SECTION_DELIMITER}\n"
+        client.write_memory_md(content)
+        assert len(client.read_memory_md()) > NATIVE_MEMORY_MAX_CHARS
+
+        removed = client.trim_to_fit()
+        assert removed > 0
+        assert len(client.read_memory_md()) <= NATIVE_MEMORY_MAX_CHARS
+
+    def test_trim_to_fit_preserves_manual(self, client):
+        """trim_to_fit preserves manual entries (📝)."""
+        content = "📝 critical manual entry I wrote myself\n§\n"
+        for i in range(30):
+            content += f"🧠 auto entry {i}\n§\n"
+        client.write_memory_md(content)
+        assert client.needs_trim()
+
+        client.trim_to_fit()
+        result = client.read_memory_md()
+        assert "📝 critical manual entry" in result
 
 
 class TestSessionSearch:

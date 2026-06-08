@@ -163,7 +163,7 @@ lifecycle:
 
 ### 回滚
 ```bash
-pip install hermes-next==0.2.1 --force-reinstall --no-deps
+pip install hermes-next==0.2.0 --force-reinstall --no-deps
 ```
 
 ### 行为变化

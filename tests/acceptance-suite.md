@@ -394,7 +394,7 @@ print('✓ 性能基线完成')
 
 ```bash
 # 确认回滚命令有效
-pip install hermes-next==0.2.1 --force-reinstall --no-deps --dry-run 2>&1 | grep "Would install"
+pip install hermes-next==0.2.0 --force-reinstall --no-deps --dry-run 2>&1 | grep "Would install"
 ```
 
 - [ ] 回滚命令语法正确

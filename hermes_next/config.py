@@ -96,13 +96,13 @@ class LifecycleConfig:
 class IntegrationConfig:
     """Native Hermes Agent memory integration settings."""
 
-    sync_memory_md: bool = True
+    sync_memory_md: bool = False
     """Auto-write high-value summaries to Hermes Agent native MEMORY.md."""
 
-    promote_on_l2_confidence: float = 0.5
+    promote_on_l2_confidence: float = 0.8
     """L2 Policy confidence threshold for MEMORY.md promotion."""
 
-    promote_on_skill_crystallize: bool = True
+    promote_on_skill_crystallize: bool = False
     """Write crystallized skill summaries to MEMORY.md."""
 
     session_search_fallback: bool = True
