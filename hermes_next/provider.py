@@ -192,6 +192,15 @@ class HermesNextProvider:
             query_embedding=query_embedding,
         )
 
+        # Access tracking: increment access_count for each hit
+        if results and self._cache:
+            from hermes_next.cache.traces import TraceRepository
+            repo = TraceRepository(self._cache)
+            for r in results:
+                trace_id = r.get("id") or r.get("trace_id")
+                if trace_id:
+                    repo.mark_accessed(trace_id)
+
         formatted = format_results(results)
 
         # Fall through to Hermes Agent native session_search when pipeline returns empty
@@ -528,7 +537,7 @@ class HermesNextProvider:
 
         if tool_name == "memos_get":
             trace_id = args.get("trace_id", "")
-            uri = f"viking://resources/{self._agent_name}/memos/traces/{trace_id}.json"
+            uri = f"viking://resources/memory/traces/{trace_id}.json"
             content = self._client.content_read(uri)
             if content:
                 try:

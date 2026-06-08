@@ -20,8 +20,9 @@ class TraceRepository:
         self._insert_sql = (
             "INSERT OR REPLACE INTO traces "
             "(id, session_id, turn_index, user_content, assistant_content, "
-            "embedding, reward, tags, metadata, created_at, synced) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "embedding, reward, tags, metadata, created_at, synced, "
+            "access_count, last_accessed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
 
     def insert(self, trace: TraceRow) -> None:
@@ -92,6 +93,15 @@ class TraceRepository:
             "UPDATE traces SET synced = 1 WHERE id = ?", (trace_id,)
         )
 
+    def mark_accessed(self, trace_id: str) -> None:
+        """Increment access_count and update last_accessed for a trace."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        self._cache.execute(
+            "UPDATE traces SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
+            (now, trace_id),
+        )
+
     def mark_synced_batch(self, trace_ids: list[str]) -> None:
         """Batch mark multiple traces as synced."""
         rows = [(tid,) for tid in trace_ids]
@@ -145,6 +155,8 @@ class TraceRepository:
             json.dumps(trace.metadata, ensure_ascii=False, default=str),
             trace.created_at,
             0,
+            0,  # access_count
+            '',  # last_accessed
         )
 
     @staticmethod
@@ -160,4 +172,6 @@ class TraceRepository:
             tags=json.loads(row["tags"]) if isinstance(row["tags"], str) else [],
             metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else {},
             created_at=row["created_at"],
+            access_count=row.get("access_count", 0),
+            last_accessed=row.get("last_accessed", ""),
         )

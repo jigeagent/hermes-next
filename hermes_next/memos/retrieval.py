@@ -41,7 +41,7 @@ def retrieve_timeline(
         resp = client._client.get(
             "/api/v1/content/list",
             params={
-                "prefix": f"viking://resources/{agent}/memos/traces/",
+                "prefix": "viking://resources/memory/traces/",
                 "limit": limit,
                 "sort": "created_at",
                 "order": "desc",

@@ -1,9 +1,9 @@
-# Hermes Next v0.3.0 验收测试集
+# Hermes Next v0.4.0 验收测试集
 
 > 用途：升级后团队逐项验证，确保功能正常
 > 测试人：好二妹（先行）→ 好妹 → 灵儿
-> 预计耗时：30-45 分钟
-> 前置条件：pip install hermes-next==0.3.0 已完成
+> 预计耗时：35-50 分钟
+> 前置条件：pip install hermes-next==0.4.0 已完成
 
 ---
 
@@ -15,8 +15,8 @@
 python -c "from hermes_next import __version__; print(__version__)"
 ```
 
-- [ ] 输出 `0.3.0`
-- [ ] 非 `0.2.1`、非 `0.1.0`
+- [ ] 输出 `0.4.0`
+- [ ] 非 `0.3.x`、非 `0.2.x`
 
 ### 1.2 基础导入
 
@@ -32,7 +32,7 @@ for s in p.get_tool_schemas():
 ```
 
 - [ ] Provider 名称为 `hermes-next`
-- [ ] 工具数量为 **4**（memos_search / memos_get / memos_timeline / memos_status）
+- [ ] 工具数量为 **5**（memos_search / memos_get / memos_timeline / memos_status / **memos_feedback**）
 - [ ] 无报错
 
 ### 1.3 未初始化行为
@@ -390,11 +390,143 @@ print('✓ 性能基线完成')
 
 ---
 
-## 七、回滚验证（2 分钟）
+## 七、Feedback 闭环测试（8 分钟）
+
+### 7.1 memos_feedback 工具存在
+
+```python
+from hermes_next import HermesNextProvider
+p = HermesNextProvider()
+p.initialize(session_id="fb-test", agent_name="test")
+tools = [s["function"]["name"] for s in p.get_tool_schemas()]
+print(f"memos_feedback 存在: {'memos_feedback' in tools}")
+p.shutdown()
+```
+
+- [ ] `memos_feedback` 在工具列表中
+
+### 7.2 正反馈
+
+```python
+p = HermesNextProvider()
+p.initialize(session_id="fb-test", agent_name="test")
+p.sync_turn("这个方案很好", "谢谢，我会继续用这个方案", session_id="fb-test")
+result = p.handle_tool_call("memos_feedback", {
+    "polarity": "positive",
+    "magnitude": 1.0,
+    "episode_id": "fb-test",
+})
+print(f"正反馈结果: {result}")
+p.shutdown()
+```
+
+- [ ] 返回成功消息，包含 "Feedback recorded (positive"
+
+### 7.3 负反馈（触发 Decision Repair）
+
+```python
+p = HermesNextProvider()
+p.initialize(session_id="fb-test", agent_name="test")
+p.sync_turn(
+    "分析一下这个数据",
+    "根据 analysis 结果，建议用方案 A",
+    session_id="fb-test",
+    tags=["analysis"],
+)
+result = p.handle_tool_call("memos_feedback", {
+    "polarity": "negative",
+    "text": "this analysis approach is wrong",
+    "magnitude": 0.8,
+    "episode_id": "fb-test",
+})
+print(f"负反馈结果: {result}")
+# 查看反模式统计
+status = p.handle_tool_call("memos_status", {})
+if "已修复反模式" in status:
+    print("✅ Decision Repair 已生效")
+p.shutdown()
+```
+
+- [ ] 负反馈返回成功
+- [ ] memos_status 显示"已修复反模式"计数
+
+### 7.4 弱反馈测试（magnitude < 0.3）
+
+```python
+p = HermesNextProvider()
+p.initialize(session_id="fb-test", agent_name="test")
+result = p.handle_tool_call("memos_feedback", {
+    "polarity": "negative",
+    "text": "轻微的调整意见",
+    "magnitude": 0.2,
+    "episode_id": "fb-test",
+})
+print(f"弱反馈结果: {result}")
+# 应包含"Weak feedback"或"Repair written"，不触发 L2 重算
+p.shutdown()
+```
+
+- [ ] 弱反馈返回 "Weak feedback" 或 "Repair written"
+
+### 7.5 防抖测试
+
+```python
+p = HermesNextProvider()
+p.initialize(session_id="fb-test", agent_name="test")
+# 连续发 2 次相同反馈
+r1 = p.handle_tool_call("memos_feedback", {
+    "polarity": "negative", "magnitude": 0.8, "episode_id": "fb-test",
+})
+print(f"第一次: {r1}")
+r2 = p.handle_tool_call("memos_feedback", {
+    "polarity": "negative", "magnitude": 0.8, "episode_id": "fb-test",
+})
+print(f"第二次: {r2}")
+p.shutdown()
+```
+
+- [ ] 第一次正常返回
+- [ ] 第二次包含 "Feedback debounced" 或 "debounced"
+
+## 八、启动恢复验证（5 分钟）
+
+### 8.1 Session State 写入
+
+```python
+from hermes_next import HermesNextProvider
+
+# session_state 表应自动创建
+p = HermesNextProvider()
+p.initialize(session_id="recovery-test", agent_name="test")
+p.sync_turn("hello", "world", session_id="recovery-test")
+print("✅ session 已记录")
+p.shutdown()
+```
+
+- [ ] 初始化时 session_state 表自动创建
+- [ ] sync_turn 后 session 状态更新
+
+### 8.2 Session stale hours 可配置
 
 ```bash
-# 确认回滚命令有效
-pip install hermes-next==0.2.0 --force-reinstall --no-deps --dry-run 2>&1 | grep "Would install"
+python -c "
+from hermes_next.config import HermesNextConfig, LifecycleConfig
+cfg = HermesNextConfig()
+print(f'默认 stale hours: {cfg.lifecycle.session_stale_hours}h')
+
+# 验证可覆盖
+lc = LifecycleConfig(session_stale_hours=24)
+print(f'可配置: {lc.session_stale_hours}h')
+"
+```
+
+- [ ] 默认 4h
+- [ ] 可配置为 24h（好妹场景）或 1h（灵儿场景）
+
+## 九、回滚验证（2 分钟）
+
+```bash
+pip install hermes-next==0.3.2 --force-reinstall --no-deps --dry-run 2>&1 | grep "Would install"
 ```
 
 - [ ] 回滚命令语法正确
@@ -416,10 +548,12 @@ pip install hermes-next==0.2.0 --force-reinstall --no-deps --dry-run 2>&1 | grep
 │  ✅ 四、Viewer 检查         ___/7           │
 │  ✅ 五、生命周期测试        ___/2           │
 │  ✅ 六、错误处理            ___/4           │
-│  ✅ 七、回滚验证            ___/2           │
+│  ✅ 七、Feedback 闭环       ___/5           │
+│  ✅ 八、启动恢复            ___/2           │
+│  ✅ 九、回滚验证            ___/2           │
 │  ───────────────────                         │
-│  总分: ___/29                               │
-│  通过标准: ≥25/29                            │
+│  总分: ___/36                               │
+│  通过标准: ≥31/36                            │
 │                                              │
 │  备注:                                       │
 │  ____________________________________       │

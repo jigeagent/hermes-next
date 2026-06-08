@@ -134,10 +134,10 @@ class TestCaptureTrace:
             user_content="user",
             assistant_content="assistant",
             agent_name="my-agent",
-            tags=["important", "code"],
+            tags=["chat"],
             metadata={"context": "debugging"},
         )
 
         assert trace is not None
-        assert "important" in trace.tags
+        assert "chat" in trace.tags
         assert trace.metadata["context"] == "debugging"

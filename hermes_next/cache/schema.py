@@ -21,7 +21,9 @@ def ensure_schema(conn_or_cache: CacheConnection) -> None:
             tags        TEXT DEFAULT '',
             metadata    TEXT DEFAULT '{}',
             created_at  TEXT NOT NULL,
-            synced      INTEGER NOT NULL DEFAULT 0
+            synced      INTEGER NOT NULL DEFAULT 0,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_accessed TEXT NOT NULL DEFAULT ''
         );
 
         CREATE INDEX IF NOT EXISTS idx_traces_session

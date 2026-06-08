@@ -10,7 +10,7 @@ from typing import Any
 class TraceRow:
     """A single L1 Trace — captures a raw interaction turn.
 
-    Stored in OpenViking as: viking://resources/{agent}/memos/traces/{id}.json
+    Stored in OpenViking as: viking://resources/memory/traces/{id}.json
     """
 
     id: str
@@ -23,6 +23,8 @@ class TraceRow:
     tags: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
+    access_count: int = 0
+    last_accessed: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +38,8 @@ class TraceRow:
             "tags": self.tags,
             "metadata": self.metadata,
             "created_at": self.created_at,
+            "access_count": self.access_count,
+            "last_accessed": self.last_accessed,
         }
 
     @classmethod
@@ -51,6 +55,8 @@ class TraceRow:
             tags=data.get("tags", []),
             metadata=data.get("metadata", {}),
             created_at=data.get("created_at", ""),
+            access_count=data.get("access_count", 0),
+            last_accessed=data.get("last_accessed", ""),
         )
 
 

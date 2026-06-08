@@ -567,7 +567,7 @@ def _sync_traces_to_ov(new_db_conn: sqlite3.Connection, ov_client) -> None:
         print(f"  Syncing {len(unsynced)} traces to OpenViking...")
         for row in unsynced:
             try:
-                uri = f"viking://resources/hermes/memos/traces/{row['id']}.json"
+                uri = f"viking://resources/memory/traces/{row['id']}.json"
                 content = {
                     "id": row["id"],
                     "user_content": row["user_content"],

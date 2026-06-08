@@ -32,6 +32,12 @@ def capture_trace(
     3. Build TraceRow and persist to OpenViking storage
     4. Return the TraceRow for local caching
     """
+    # Tags validation: only allow standardized categories
+    VALID_TAGS = [["chat"], ["decision"], ["bugfix"], []]
+    if tags is not None:
+        assert [tags] in VALID_TAGS or tags in [["chat"], ["decision"], ["bugfix"], []], \
+            f"Invalid tags: {tags}. Must be one of: {VALID_TAGS}"
+
     trace_id = new_id()
     created_at = datetime.now(timezone.utc).isoformat()
 
@@ -54,7 +60,7 @@ def capture_trace(
     )
 
     # Persist to OpenViking
-    uri = f"viking://resources/{agent_name}/memos/traces/{trace_id}.json"
+    uri = f"viking://resources/memory/traces/{trace_id}.json"
     content = json.dumps(trace.to_dict(), ensure_ascii=False, default=str)
     success = client.content_write(
         uri=uri,
