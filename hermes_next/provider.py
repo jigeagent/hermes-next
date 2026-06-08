@@ -626,6 +626,16 @@ class HermesNextProvider:
                     lines.append(f"**Total feedback signals:** {fb_count}")
                 except Exception:
                     pass
+                try:
+                    # Count policies with @repair blocks
+                    rows = self._cache.execute(
+                        "SELECT metadata FROM policies WHERE metadata LIKE '%repair%'"
+                    ).fetchall()
+                    repair_count = len(rows)
+                    if repair_count > 0:
+                        lines.append(f"**已修复反模式:** {repair_count} 个 Policy 含 @repair 块")
+                except Exception:
+                    pass
 
         if self._native:
             ni = self._native.get_stats()

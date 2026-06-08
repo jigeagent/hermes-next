@@ -2,7 +2,7 @@
 
 from hermes_next.provider import HermesNextProvider
 
-__version__ = "0.4.0b0"
+__version__ = "0.4.0"
 __all__ = ["HermesNextProvider", "register"]
 
 
