@@ -533,6 +533,14 @@ class HermesNextProvider:
             query = args.get("query", "")
             k = min(args.get("k", 8), 32)
             results = retrieve_semantic(self._client, query, k=k, agent=self._agent_name)
+            # Access tracking
+            if results and self._cache:
+                from hermes_next.cache.traces import TraceRepository
+                repo = TraceRepository(self._cache)
+                for r in results:
+                    trace_id = r.get("id") or r.get("trace_id")
+                    if trace_id:
+                        repo.mark_accessed(trace_id)
             return format_results(results) or "No relevant memories found."
 
         if tool_name == "memos_get":
@@ -543,6 +551,10 @@ class HermesNextProvider:
                 try:
                     data = json.loads(content)
                     trace = TraceRow.from_dict(data)
+                    # Access tracking
+                    if self._cache:
+                        from hermes_next.cache.traces import TraceRepository
+                        TraceRepository(self._cache).mark_accessed(trace_id)
                     return (
                         f"## Trace: {trace.id}\n"
                         f"**User:** {trace.user_content}\n"
