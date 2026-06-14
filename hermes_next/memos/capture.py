@@ -28,9 +28,12 @@ def capture_trace(
 
     Steps:
     1. Generate a UUID v7 ID for the trace
-    2. Compute embedding via OpenViking API
-    3. Build TraceRow and persist to OpenViking storage
-    4. Return the TraceRow for local caching
+    2. Compute embedding via OpenViking API (失败不阻塞写入)
+    3. Build TraceRow and persist to local cache
+    4. Try OV sync (失败不阻塞, log 警告)
+
+    Note: embedding 和 OV 写入都是非关键路径。
+    即使 OV 离线，trace 仍会写入本地 cache.db。
     """
     # Tags validation: only allow standardized categories
     VALID_TAGS = [["chat"], ["decision"], ["bugfix"], []]
@@ -44,8 +47,12 @@ def capture_trace(
     # Compute combined text for embedding
     embed_text = f"User: {user_content}\nAssistant: {assistant_content}"
 
-    # Get embedding from OpenViking
-    embedding = client.embed(embed_text)
+    # Get embedding from OpenViking — non-blocking: 失败则 embedding=None
+    embedding = None
+    try:
+        embedding = client.embed(embed_text)
+    except Exception as e:
+        logger.warning("Embedding failed for trace %s (OV may be offline): %s", trace_id, e)
 
     trace = TraceRow(
         id=trace_id,
@@ -59,24 +66,26 @@ def capture_trace(
         created_at=created_at,
     )
 
-    # Persist to OpenViking
-    uri = f"viking://resources/memory/traces/{trace_id}.json"
-    content = json.dumps(trace.to_dict(), ensure_ascii=False, default=str)
-    success = client.content_write(
-        uri=uri,
-        content=content,
-        content_type="application/json",
-        metadata={
-            "type": "trace",
-            "session_id": session_id,
-            "turn_index": turn_index,
-            "agent": agent_name,
-        },
-    )
+    # Persist to OpenViking — non-blocking: 失败不阻塞写入
+    try:
+        uri = f"viking://resources/memory/traces/{trace_id}.json"
+        content = json.dumps(trace.to_dict(), ensure_ascii=False, default=str)
+        success = client.content_write(
+            uri=uri,
+            content=content,
+            content_type="application/json",
+            metadata={
+                "type": "trace",
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "agent": agent_name,
+            },
+        )
+        if not success:
+            logger.warning("OV write failed for trace %s (OV may be offline)", trace_id)
+    except Exception as e:
+        logger.warning("OV write exception for trace %s: %s", trace_id, e)
 
-    if not success:
-        logger.warning("Failed to persist trace %s to OpenViking", trace_id)
-        return None
-
-    logger.info("Trace %s captured (turn %d)", trace_id, turn_index)
+    logger.info("Trace %s captured (turn %d, embedding=%s)", trace_id, turn_index,
+                "yes" if embedding is not None else "no")
     return trace
