@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from hermes_next.cache.connection import CacheConnection
 
@@ -30,6 +30,10 @@ class LifecycleConfig:
     """Policies below this confidence are pruned."""
 
     skill_min_version: int = 1
+    """Minimum skill version to keep (older versions pruned)."""
+
+    auto_trim_memory_md: bool = True
+    """Auto-trim MEMORY.md when it exceeds capacity during cleanup cycles."""
     """Minimum skill version to keep (older versions pruned)."""
 
     cleanup_interval_traces: int = 500
@@ -70,7 +74,7 @@ class LifecycleManager:
         if self._trace_count_since_cleanup >= self._config.cleanup_interval_traces:
             self.run_cleanup()
 
-    def run_cleanup(self) -> LifecycleStats:
+    def run_cleanup(self, trim_callback: Callable[[], None] | None = None) -> LifecycleStats:
         """Run full lifecycle sweep: archive → decay → prune.
 
         Returns:
@@ -98,6 +102,14 @@ class LifecycleManager:
         stats.skills_pruned = pruned_skills
 
         stats.traces_after_cleanup = self._count_traces()
+
+        # 5. Auto-trim MEMORY.md if configured
+        if self._config.auto_trim_memory_md and trim_callback is not None:
+            try:
+                trim_callback()
+                logger.info("MEMORY.md auto-trim triggered after lifecycle cleanup")
+            except Exception as e:
+                logger.warning("MEMORY.md auto-trim failed: %s", e)
 
         self._trace_count_since_cleanup = 0
         self._last_cleanup = datetime.now(timezone.utc).isoformat()

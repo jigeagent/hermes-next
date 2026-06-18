@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from hermes_next.cache.connection import CacheConnection
 from hermes_next.cache.feedback import FeedbackRepository
-from hermes_next.cache.lifecycle import LifecycleManager
+from hermes_next.cache.lifecycle import LifecycleManager, LifecycleStats
 from hermes_next.cache.policies import PolicyRepository
 from hermes_next.cache.schema import ensure_schema
 from hermes_next.cache.session_state import SessionState, SessionStateRepository
@@ -21,9 +21,9 @@ from hermes_next.memos.pipeline import (
     CognitivePipelineConfig,
     PipelineStage,
 )
-from hermes_next.memos.reward import OutcomeSignal
 from hermes_next.memos.repair import apply_decision_repair
 from hermes_next.memos.retrieval import format_results, retrieve_semantic, retrieve_timeline
+from hermes_next.memos.reward import OutcomeSignal
 from hermes_next.memos.types import TraceRow
 from hermes_next.ov.client import OpenVikingClient
 from hermes_next.ov.session import OVSession
@@ -58,17 +58,16 @@ class HermesNextProvider:
         self._policy_repo: Optional[PolicyRepository] = None
 
     def _get_embedding(self, text: str) -> Optional[list[float]]:
-        """Cached embedding lookup."""
+        """Cached embedding lookup with DashScope fallback."""
         if not self._client:
             return None
         if text in self._embed_cache:
             return self._embed_cache[text]
         if len(self._embed_cache) >= self._embed_cache_max:
-            # Simple evict: clear half
             evict = len(self._embed_cache) // 2
             for k in list(self._embed_cache)[:evict]:
                 del self._embed_cache[k]
-        emb = self._client.embed(text)
+        emb = self._client.embed(text, dashscope_config=self._config.dashscope)
         if emb:
             self._embed_cache[text] = emb
         return emb
@@ -94,6 +93,9 @@ class HermesNextProvider:
             timeout=cfg.openviking.timeout,
             max_retries=cfg.openviking.max_retries,
         )
+        # Set DashScope fallback for embedding
+        if cfg.dashscope.enabled:
+            self._client.set_dashscope_config(cfg.dashscope)
         self._agent_name = kwargs.get("agent_name", cfg.agent.name)
 
         # Local SQLite cache for FTS5 + offline search
@@ -112,6 +114,13 @@ class HermesNextProvider:
             cache=self._cache,
             config=cfg.lifecycle,  # type: ignore[arg-type]
         )
+        # Wire MEMORY.md auto-trim into lifecycle cleanup
+        orig_cleanup = self._lifecycle.run_cleanup
+
+        def _wrapped_cleanup() -> LifecycleStats:
+            return orig_cleanup(trim_callback=self._auto_trim_memory_md)
+
+        self._lifecycle.run_cleanup = _wrapped_cleanup  # type: ignore[method-assign]
 
         # Native Hermes Agent memory bridge (MEMORY.md sync + session_search)
         self._native = NativeMemoryClient(
@@ -123,6 +132,9 @@ class HermesNextProvider:
                 session_search_max_results=cfg.integration.session_search_max_results,
             ),
         )
+
+        # Run initial MEMORY.md auto-trim check
+        self._auto_trim_memory_md()
 
         # Cognitive pipeline (L1 → Reward → L2 → L3 → Skill)
         pipeline_enabled_stages = {PipelineStage.L1_CAPTURE}
@@ -140,8 +152,8 @@ class HermesNextProvider:
 
         # v0.4: Feedback + session state repos
         from hermes_next.cache.feedback import FeedbackRepository
-        from hermes_next.cache.session_state import SessionStateRepository
         from hermes_next.cache.policies import PolicyRepository
+        from hermes_next.cache.session_state import SessionStateRepository
 
         self._feedback_repo = FeedbackRepository(self._cache)
         self._session_repo = SessionStateRepository(self._cache)
@@ -636,7 +648,7 @@ class HermesNextProvider:
             lines.append("")
             lines.append("---")
             lines.append("### Feedback")
-            lines.append(f"**Feedback enabled:** ✅")
+            lines.append("**Feedback enabled:** ✅")
             lines.append(f"**Debounce window:** {self._config.feedback.debounce_seconds}s")
             lines.append(f"**L2 re-induction threshold:** {self._config.feedback.l2_reinduction_min_negatives} negatives")
             if self._cache:
@@ -674,6 +686,22 @@ class HermesNextProvider:
 
         return "\n".join(lines)
 
+    def _auto_trim_memory_md(self) -> None:
+        """Auto-trim MEMORY.md if native integration is active and over capacity."""
+        if not self._native:
+            return
+        try:
+            ratio = self._native.usage_ratio()
+            if ratio >= self._config.integration.memory_md_capacity_warning:
+                removed = self._native.trim_to_fit()
+                if removed > 0:
+                    logger.info(
+                        "MEMORY.md auto-trim: removed %d entries, usage %.0f%%",
+                        removed, ratio * 100,
+                    )
+        except Exception as e:
+            logger.debug("MEMORY.md auto-trim check skipped: %s", e)
+
     def shutdown(self) -> None:
         """Close the OpenViking connection, local cache, and reset pipeline state."""
         if self._client:
@@ -706,7 +734,6 @@ class HermesNextProvider:
 
         # v0.4: Close session state for crash recovery
         if self._session_repo:
-            from hermes_next.cache.session_state import SessionState
 
             self._session_repo.close(session_id)  # type: ignore[arg-type]
 
@@ -845,3 +872,5 @@ class HermesNextProvider:
         if trace and self._pipeline:
             self._pipeline.process_trace(trace)
             self._session_traces.append(trace)
+
+

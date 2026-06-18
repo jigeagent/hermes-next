@@ -22,6 +22,16 @@ class OpenVikingConfig:
 
 
 @dataclass
+class DashScopeEmbeddingConfig:
+    """DashScope (Alibaba Cloud) embedding settings — fallback when OV /api/v1/embed is unavailable."""
+
+    enabled: bool = False
+    api_key: Optional[str] = None
+    model: str = "text-embedding-v4"
+    dimension: int = 2048
+    api_base: str = "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+
+@dataclass
 class CacheConfig:
     """Local SQLite cache settings."""
 
@@ -146,6 +156,7 @@ class HermesNextConfig:
     lifecycle: LifecycleConfig = field(default_factory=LifecycleConfig)
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    dashscope: DashScopeEmbeddingConfig = field(default_factory=DashScopeEmbeddingConfig)
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "HermesNextConfig":
@@ -246,6 +257,20 @@ class HermesNextConfig:
             if "l2_reinduction_min_negatives" in fb:
                 self.feedback.l2_reinduction_min_negatives = int(fb["l2_reinduction_min_negatives"])
 
+
+        if "dashscope" in data:
+            ds = data["dashscope"]
+            if "enabled" in ds:
+                self.dashscope.enabled = bool(ds["enabled"])
+            if "api_key" in ds:
+                self.dashscope.api_key = ds["api_key"]
+            if "model" in ds:
+                self.dashscope.model = ds["model"]
+            if "dimension" in ds:
+                self.dashscope.dimension = int(ds["dimension"])
+            if "api_base" in ds:
+                self.dashscope.api_base = ds["api_base"]
+
         if "integration" in data:
             ig = data["integration"]
             if "sync_memory_md" in ig:
@@ -266,6 +291,7 @@ class HermesNextConfig:
             "HERMES_NEXT_OV_API_KEY": ("openviking", "api_key"),
             "HERMES_NEXT_CACHE_PATH": ("cache", "path"),
             "HERMES_NEXT_AGENT_NAME": ("agent", "name"),
+            "HERMES_NEXT_DASHSCOPE_API_KEY": ("dashscope", "api_key"),
         }
         for env_var, (section, attr) in env_map.items():
             val = os.environ.get(env_var)
@@ -288,3 +314,4 @@ class HermesNextConfig:
 def get_config(path: Optional[str] = None) -> HermesNextConfig:
     """Convenience function to load configuration."""
     return HermesNextConfig.load(path)
+

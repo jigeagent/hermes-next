@@ -43,6 +43,7 @@ Issues = "https://github.com/jigeagent/hermes-next/issues"
 [project.scripts]
 hermes-next-viewer = "hermes_next.viewer.server:main"
 hermes-next-migrate = "hermes_next.migrate:main"
+hermes-next-status = "hermes_next.status:main"
 
 [project.entry-points."hermes.memory"]
 hermes-next = "hermes_next:register"
@@ -68,3 +69,4 @@ python_version = "3.10"
 ignore_missing_imports = true
 follow_imports = "skip"
 warn_unused_ignores = false
+

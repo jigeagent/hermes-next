@@ -65,6 +65,7 @@ class OpenVikingClient:
                 transport_kwargs["retries"] = max_retries
 
         transport = httpx.HTTPTransport(**transport_kwargs)
+        self._dashscope_config = None  # Set via set_dashscope_config()
         self._client = httpx.Client(
             base_url=self.base_url,
             headers=headers,
@@ -81,6 +82,11 @@ class OpenVikingClient:
             return resp.status_code < 500
         except httpx.HTTPError:
             return False
+
+
+    def set_dashscope_config(self, config: object) -> None:
+        """Set DashScope fallback embedding config."""
+        self._dashscope_config = config
 
     # ── Search ──────────────────────────────────────────────
 
@@ -166,16 +172,65 @@ class OpenVikingClient:
 
     # ── Embed ───────────────────────────────────────────────
 
-    def embed(self, text: str) -> Optional[list[float]]:
-        """Get embedding vector for a text string."""
+    def embed(self, text: str, *, dashscope_config: Optional[object] = None) -> Optional[list[float]]:
+        """Get embedding vector for a text string.
+
+        Tries OV /api/v1/embed first; falls back to DashScope direct call.
+        """
+        # Try OV first
         try:
             resp = self._client.post("/api/v1/embed", json={"text": text})
+            if resp.status_code < 400:
+                data = resp.json()
+                result = data.get("embedding", data.get("vector"))
+                if result:
+                    return result
+        except httpx.HTTPError:
+            pass
+
+        # Fallback: DashScope direct
+        ds_cfg = dashscope_config or self._dashscope_config
+        if ds_cfg and getattr(ds_cfg, 'enabled', False):
+            return self._embed_dashscope(text, ds_cfg)
+
+        return None
+
+    @staticmethod
+    def _embed_dashscope(text: str, config: object) -> Optional[list[float]]:
+        """Call DashScope embedding API directly."""
+        import json as _json
+        api_key = getattr(config, 'api_key', None)
+        api_base = getattr(config, 'api_base', 'https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding')
+        model = getattr(config, 'model', 'text-embedding-v4')
+
+        if not api_key:
+            logger.warning("DashScope embed: no api_key configured")
+            return None
+
+        payload = {
+            "model": model,
+            "input": {"texts": [text]},
+            "parameters": {"text_type": "document"},
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = httpx.post(api_base, json=payload, headers=headers, timeout=15.0)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("embedding", data.get("vector"))
-        except httpx.HTTPError as e:
-            logger.warning("embed failed: %s", e)
-            return None
+            embeddings = data.get("output", {}).get("embeddings", [])
+            if embeddings:
+                emb = embeddings[0].get("embedding", [])
+                if isinstance(emb, list):
+                    return emb
+                return [float(x) for x in str(emb).split()]
+        except Exception as e:
+            logger.warning("DashScope embed failed: %s", e)
+
+        return None
 
     # ── Lifecycle ───────────────────────────────────────────
 
@@ -188,3 +243,6 @@ class OpenVikingClient:
 
     def __exit__(self, *args: Any) -> None:
         self.close()
+
+
+
