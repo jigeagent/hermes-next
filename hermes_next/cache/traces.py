@@ -117,6 +117,13 @@ class TraceRepository:
         ).fetchall()
         return [self._row_to_trace(r) for r in rows]
 
+    def update_reward(self, trace_id: str, reward: float) -> None:
+        """Update the reward value for a single trace."""
+        self._cache.execute(
+            "UPDATE traces SET reward = ? WHERE id = ?",
+            (reward, trace_id),
+        )
+
     def delete_old(self, before_timestamp: str) -> int:
         """Delete traces older than a timestamp. Returns count deleted."""
         cursor = self._cache.execute(
@@ -172,6 +179,6 @@ class TraceRepository:
             tags=json.loads(row["tags"]) if isinstance(row["tags"], str) else [],
             metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else {},
             created_at=row["created_at"],
-            access_count=row.get("access_count", 0),
-            last_accessed=row.get("last_accessed", ""),
+            access_count=row["access_count"] if "access_count" in row.keys() else 0,
+            last_accessed=row["last_accessed"] if "last_accessed" in row.keys() else "",
         )

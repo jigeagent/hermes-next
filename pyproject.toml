@@ -44,6 +44,7 @@ Issues = "https://github.com/jigeagent/hermes-next/issues"
 hermes-next-viewer = "hermes_next.viewer.server:main"
 hermes-next-migrate = "hermes_next.migrate:main"
 hermes-next-status = "hermes_next.status:main"
+hermes-next-promote = "hermes_next.promote:main"
 
 [project.entry-points."hermes.memory"]
 hermes-next = "hermes_next:register"
