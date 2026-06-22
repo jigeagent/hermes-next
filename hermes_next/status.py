@@ -37,6 +37,7 @@ class DBStats:
     path: str = ""
     size_mb: float = 0.0
     traces: int = 0
+    embedded: int = 0
     policies: int = 0
     skills: int = 0
     concepts: int = 0
@@ -147,6 +148,7 @@ def _query_db(db_path: str) -> DBStats:
         # Counts — only if tables exist
         if "traces" in tables:
             stats.traces = cursor.execute("SELECT COUNT(*) FROM traces").fetchone()[0]
+            stats.embedded = cursor.execute("SELECT COUNT(*) FROM traces WHERE embedding IS NOT NULL").fetchone()[0]
         if "policies" in tables:
             stats.policies = cursor.execute("SELECT COUNT(*) FROM policies").fetchone()[0]
         if "skills" in tables:
@@ -257,6 +259,10 @@ def _render_text(report: StatusReport) -> str:
         lines.append(f"  WAL      : {db.wal_size_mb} MB")
     lines.append(f"  Schema   : {'[OK] OK' if db.schema_ok else '[ERR] Incomplete'}")
     lines.append(f"  Traces   : {db.traces}")
+    embedded = db.embedded
+    pct = (embedded / db.traces * 100) if db.traces > 0 else 0
+    warn = "  嵌入覆盖率低于 50%" if pct < 50 else ""
+    lines.append(f"  嵌入覆盖率:  {embedded} / {db.traces} ({pct:.0f}%){warn}")
     lines.append(f"  Policies : {db.policies}")
     lines.append(f"  Skills   : {db.skills}")
     lines.append(f"  Concepts : {db.concepts}")

@@ -87,6 +87,13 @@ class TraceRepository:
         ).fetchone()
         return row["cnt"] if row else 0
 
+    def count_embedded(self) -> int:
+        """Count traces with non-null 384-d embeddings."""
+        row = self._cache.execute(
+            "SELECT COUNT(*) FROM traces WHERE embedding IS NOT NULL"
+        ).fetchone()
+        return row[0] if row else 0
+
     def mark_synced(self, trace_id: str) -> None:
         """Mark a trace as synced to OpenViking."""
         self._cache.execute(
