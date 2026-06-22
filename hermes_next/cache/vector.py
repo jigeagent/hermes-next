@@ -32,7 +32,7 @@ def search_by_embedding(
     query_dim = len(query_embedding) if query_embedding is not None else 0
     scores: list[tuple[str, float]] = []
     for cid, emb in candidates:
-        if emb and len(emb) == query_dim:
+        if emb is not None and len(emb) == query_dim:
             sim = cosine_similarity(query_embedding, emb)
             scores.append((cid, sim))
 
@@ -91,7 +91,9 @@ class EmbeddingEngine:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        return list(self._get_model().embed(texts))
+        raw = list(self._get_model().embed(texts))
+        # Convert numpy arrays to plain lists for downstream compatibility
+        return [v.tolist() if hasattr(v, 'tolist') else v for v in raw]
 
     def embed_query(self, text: str) -> list[float]:
         if not text:

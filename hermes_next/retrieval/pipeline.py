@@ -56,10 +56,17 @@ class RetrievalPipeline:
         """
         cfg = self._config
 
-        # Step 1: Semantic search via OpenViking
-        semantic_results = retrieve_semantic(
-            self._client, query, k=cfg.semantic_k, agent=agent
-        )
+        # Step 1: Semantic search — OV preferred, local fallback
+        semantic_results = []
+        try:
+            health = self._client.health()
+            if health:
+                semantic_results = retrieve_semantic(
+                    self._client, query, k=cfg.semantic_k, agent=agent
+                )
+        except Exception:
+            logger.info("OV unreachable, falling back to local embedding search")
+            semantic_results = self._local_semantic_search(query, k=cfg.semantic_k)
 
         # Step 2: Full-text search via local SQLite FTS5
         fts_results = self._fts_search(query, k=cfg.fts_k)
@@ -151,3 +158,30 @@ class RetrievalPipeline:
 
         results.sort(key=lambda x: x.get(score_key, 0), reverse=True)
         return results
+
+    def _local_semantic_search(self, query: str, k: int = 8) -> list[dict[str, Any]]:
+        """Local embedding search fallback when OV is unavailable."""
+        try:
+            from hermes_next.cache.vector import EmbeddingEngine, search_by_embedding
+            query_emb = EmbeddingEngine().embed_query(query)
+            if not query_emb:
+                return []
+            candidates = self._trace_repo.get_all_embeddings(limit=5000)
+            if not candidates:
+                return []
+            matches = search_by_embedding(query_emb, candidates, k=k)
+            results = []
+            for cid, score in matches:
+                t = self._trace_repo.get(cid)
+                if t:
+                    results.append({
+                        "id": t.id,
+                        "content": f"User: {t.user_content}\nAssistant: {t.assistant_content}",
+                        "score": float(score),
+                        "source": "local_embed",
+                        "created_at": t.created_at,
+                    })
+            return results
+        except Exception as e:
+            logger.warning("Local embedding search failed: %s", e)
+            return []
