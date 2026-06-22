@@ -261,8 +261,8 @@ def _render_text(report: StatusReport) -> str:
     lines.append(f"  Traces   : {db.traces}")
     embedded = db.embedded
     pct = (embedded / db.traces * 100) if db.traces > 0 else 0
-    warn = "  嵌入覆盖率低于 50%" if pct < 50 else ""
-    lines.append(f"  嵌入覆盖率:  {embedded} / {db.traces} ({pct:.0f}%){warn}")
+    warn = "  Embedding coverage < 50%" if pct < 50 else ""
+    lines.append(f"  Embedding coverage:  {embedded} / {db.traces} ({pct:.0f}%){warn}")
     lines.append(f"  Policies : {db.policies}")
     lines.append(f"  Skills   : {db.skills}")
     lines.append(f"  Concepts : {db.concepts}")

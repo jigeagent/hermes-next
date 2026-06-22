@@ -1,6 +1,7 @@
 """Tests for hermes_next/cache/vector.py — EmbeddingEngine."""
 
 import numpy as np
+
 from hermes_next.cache.vector import EmbeddingEngine
 
 
