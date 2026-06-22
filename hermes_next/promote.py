@@ -319,6 +319,64 @@ def run_pipeline(
     return result
 
 
+# ---- Embedding Backfill --------------------------------------------------
+
+
+def backfill_embeddings(
+    cache_path: str = "",
+    dry_run: bool = False,
+    batch_size: int = 32,
+) -> dict:
+    """Backfill missing embeddings for traces without them (or wrong dimension)."""
+    import time, json
+    from hermes_next.cache.vector import EmbeddingEngine
+
+    if not cache_path:
+        cache_path = _resolve_path("~/.hermes-next/cache.db")
+
+    try:
+        from hermes_next.cache.connection import CacheConnection
+        from hermes_next.cache.traces import TraceRepository
+        cache = CacheConnection(_resolve_path(cache_path))
+        ensure_schema(cache)
+        repo = TraceRepository(cache)
+    except Exception as e:
+        return {"error": f"cannot open cache: {e}"}
+
+    all_traces = repo.list_recent(limit=50000)
+    target_dim = 384
+    pending = [
+        t for t in all_traces
+        if t.embedding is None or len(t.embedding) != target_dim
+    ]
+    total = len(all_traces)
+    pending_count = len(pending)
+
+    if dry_run:
+        cache.close_all()
+        return {"processed": 0, "total": total, "pending": pending_count, "dry_run": True}
+
+    engine = EmbeddingEngine()
+    processed = 0
+    t0 = time.time()
+
+    for i in range(0, pending_count, batch_size):
+        batch = pending[i:i + batch_size]
+        texts = [
+            (t.user_content or "") + " " + (t.assistant_content or "")
+            for t in batch
+        ]
+        embeddings = engine.embed(texts)
+        for t, emb in zip(batch, embeddings):
+            emb_list = emb.tolist() if hasattr(emb, 'tolist') else list(emb)
+            repo.update_embedding(t.id, json.dumps(emb_list))
+            processed += 1
+
+    cache.close_all()
+    elapsed = time.time() - t0
+    return {"processed": processed, "total": total, "pending": pending_count, "elapsed_seconds": round(elapsed, 1)}
+
+
 # ---- CLI -----------------------------------------------------------------
 
 
@@ -347,6 +405,11 @@ def main() -> None:
         help="Estimate missing rewards via heuristics before induction",
     )
     parser.add_argument(
+        "--backfill-embeddings",
+        action="store_true",
+        help="Backfill missing embeddings for traces without them (or wrong dimension)",
+    )
+    parser.add_argument(
         "--enable-l3",
         action="store_true",
         help="Enable L3 world model clustering (opt-in, default: off)",
@@ -368,6 +431,16 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(message)s",
     )
+
+    # Handle backfill-embeddings separately (standalone CLI)
+    if args.backfill_embeddings:
+        result = backfill_embeddings(
+            cache_path=args.cache_path,
+            dry_run=args.dry_run,
+        )
+        json.dump(result, sys.stdout, indent=2, ensure_ascii=False, default=str)
+        print()
+        sys.exit(0 if result.get("error") is None else 1)
 
     result = run_pipeline(
         cache_path=args.cache_path,

@@ -124,6 +124,13 @@ class TraceRepository:
             (reward, trace_id),
         )
 
+    def update_embedding(self, trace_id: str, embedding_json: str) -> None:
+        """Update the embedding for a single trace (stored as JSON string)."""
+        self._cache.execute(
+            "UPDATE traces SET embedding = ? WHERE id = ?",
+            (embedding_json, trace_id),
+        )
+
     def delete_old(self, before_timestamp: str) -> int:
         """Delete traces older than a timestamp. Returns count deleted."""
         cursor = self._cache.execute(
