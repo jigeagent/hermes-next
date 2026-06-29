@@ -434,7 +434,7 @@ def main() -> None:
 
     # Handle backfill-embeddings separately (standalone CLI)
     if args.backfill_embeddings:
-    logger.info("Running standalone backfill (pipeline skipped)")
+        logger.info("Running standalone backfill (pipeline skipped)")
         result = backfill_embeddings(
             cache_path=args.cache_path,
             dry_run=args.dry_run,

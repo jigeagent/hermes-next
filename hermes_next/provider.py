@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from hermes_next.cache.connection import CacheConnection
@@ -52,6 +54,11 @@ class HermesNextProvider:
         # Embedding cache: {text: embedding}
         self._embed_cache: dict[str, list[float]] = {}
         self._embed_cache_max: int = 256
+        # v0.7 — hot.md cross-session continuation
+        self._hot_path: Optional[Path] = None
+        self._hot_enabled: bool = True
+        self._hot_max_age_hours: int = 24
+
         # v0.4: Feedback & session state repos (lazy init)
         self._feedback_repo: Optional[FeedbackRepository] = None
         self._session_repo: Optional[SessionStateRepository] = None
@@ -170,6 +177,15 @@ class HermesNextProvider:
         # v0.4: Recover orphan sessions from previous crashes
         self._recover_orphan_sessions()
 
+        # v0.7 — hot.md path for cross-session continuation
+        hermes_home = kwargs.get("hermes_home", "")
+        if hermes_home:
+            self._hot_path = Path(hermes_home) / "hot.md"
+        else:
+            self._hot_path = Path.home() / ".hermes" / "hot.md"
+        self._hot_enabled = cfg.integration.hot_enabled if hasattr(cfg.integration, 'hot_enabled') else True
+        self._hot_max_age_hours = cfg.integration.hot_max_age_hours if hasattr(cfg.integration, 'hot_max_age_hours') else 24
+
         self._session = OVSession(
             client=self._client,
             session_id=session_id,
@@ -230,6 +246,26 @@ class HermesNextProvider:
 
         return formatted
 
+    def system_prompt_block(self) -> str:
+        """Return formatted hot.md content for the system prompt volatile tier.
+
+        Called once at session start by the MemoryManager. Returns the
+        previous session's status snapshot so the agent continues seamlessly.
+        """
+        if not self._hot_enabled or not self._hot_path:
+            return ""
+
+        hot_content = self._read_hot()
+        if not hot_content:
+            return ""
+
+        return (
+            "\n\n## Previous session snapshot\n"
+            "The following is what was being worked on in your last session. "
+            "Use it to continue seamlessly.\n\n"
+            f"{hot_content}\n"
+        )
+
     def sync_turn(  # noqa: PLR0913
         self,
         user_content: str,
@@ -274,6 +310,9 @@ class HermesNextProvider:
         if trace and self._pipeline:
             self._pipeline.process_trace(trace)
             self._session_traces.append(trace)
+
+        # v0.7: Update hot.md for cross-session continuation
+        self._write_hot(user_content, assistant_content)
 
         # v0.4: Update session state for crash recovery
         if self._session_repo:
@@ -701,6 +740,117 @@ class HermesNextProvider:
                     )
         except Exception as e:
             logger.debug("MEMORY.md auto-trim check skipped: %s", e)
+
+    # ── v0.7: hot.md read/write ────────────────────────
+
+    def _read_hot(self) -> str:
+        """Read hot.md, return body text or empty string."""
+        if not self._hot_path or not self._hot_path.is_file():
+            return ""
+
+        try:
+            content = self._hot_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+        if not content:
+            return ""
+
+        # Frontmatter extraction
+        meta: dict[str, str] = {}
+        body = content
+        lines = content.split("\n")
+        if lines and lines[0].strip() == "---":
+            body_lines: list[str] = []
+            in_body = False
+            for line in lines[1:]:
+                if line.strip() == "---":
+                    in_body = True
+                    continue
+                if not in_body and ":" in line:
+                    k, _, v = line.partition(":")
+                    meta[k.strip()] = v.strip()
+                elif in_body:
+                    body_lines.append(line)
+            body = "\n".join(body_lines).strip()
+
+        if not body:
+            return ""
+
+        # Staleness check
+        updated_str = meta.get("updated_at", "")
+        if updated_str:
+            try:
+                updated = datetime.fromisoformat(updated_str)
+                age_hours = (datetime.now(timezone.utc) - updated).total_seconds() / 3600
+                if age_hours > self._hot_max_age_hours:
+                    return (
+                        f"[上次会话: {updated_str[:16]}, {age_hours:.0f}h 前 — 可能需要回顾]\n\n"
+                        f"{body}\n"
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        return body
+
+    def _write_hot(self, user_content: str, assistant_content: str) -> None:
+        """Write hot.md with session status snapshot."""
+        if not self._hot_enabled or not self._hot_path:
+            return
+        if not user_content and not assistant_content:
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Read existing to preserve created_at
+        existing_meta: dict[str, str] = {}
+        existing_body = ""
+        if self._hot_path.is_file():
+            try:
+                text = self._hot_path.read_text(encoding="utf-8")
+                lines = text.split("\n")
+                if lines and lines[0].strip() == "---":
+                    in_body = False
+                    body_parts: list[str] = []
+                    for line in lines[1:]:
+                        if line.strip() == "---":
+                            in_body = True
+                            continue
+                        if not in_body and ":" in line:
+                            k, _, v = line.partition(":")
+                            existing_meta[k.strip()] = v.strip()
+                        elif in_body:
+                            body_parts.append(line)
+                    existing_body = "\n".join(body_parts).strip()
+            except OSError:
+                pass
+
+        summary = (user_content or "")[:200]
+        if len(summary) >= 200:
+            summary = summary[:197] + "..."
+
+        created = existing_meta.get("created_at", now_iso)
+
+        meta_lines = [
+            "---",
+            f"updated_at: {now_iso}",
+            f"created_at: {created}",
+            f"session_id: {self._session_id if hasattr(self, '_session_id') else ''}",
+            "---",
+            "",
+            f"## 最新工作",
+            "",
+            f"{summary}",
+            "",
+        ]
+
+        if existing_body and len(existing_body) > 10:
+            meta_lines.append("---")
+            meta_lines.append("")
+            meta_lines.append(existing_body)
+
+        self._hot_path.parent.mkdir(parents=True, exist_ok=True)
+        self._hot_path.write_text("\n".join(meta_lines), encoding="utf-8")
 
     def shutdown(self) -> None:
         """Close the OpenViking connection, local cache, and reset pipeline state."""
